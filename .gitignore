@@ -1,3 +1,11 @@
+# Build output
+build/
+
+# Local configuration (may contain endpoint credentials)
+indexer.conf
+*.local.conf
+.env
+
 # Prerequisites
 *.d
 

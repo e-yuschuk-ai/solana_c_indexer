@@ -1,0 +1,31 @@
+# Example configuration for solana_c_indexer.
+#
+# Copy to indexer.conf (gitignored) and adjust. Every setting can also be
+# supplied through an environment variable or a command line flag; later
+# sources win:
+#
+#   defaults < indexer.conf < environment < command line
+
+# Solana JSON-RPC endpoint. Required.
+# Environment: SOLANA_RPC_URL   Flag: --rpc-url
+rpc_url = https://api.mainnet-beta.solana.com
+
+# Solana WebSocket endpoint. Optional until milestone M4.
+# Environment: SOLANA_WSS_URL   Flag: --wss-url
+# wss_url = wss://api.mainnet-beta.solana.com
+
+# error, warn, info, debug or trace.
+# Environment: INDEXER_LOG_LEVEL   Flag: --log-level
+log_level = info
+
+# First slot to index. 0 starts from the current chain tip.
+# Environment: INDEXER_START_SLOT   Flag: --start-slot
+start_slot = 0
+
+# Last slot to index. 0 follows the tip indefinitely.
+# Environment: INDEXER_END_SLOT   Flag: --end-slot
+end_slot = 0
+
+# Number of parallel block fetchers (1-1024).
+# Environment: INDEXER_CONCURRENCY   Flag: --concurrency
+concurrency = 4

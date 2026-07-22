@@ -1,0 +1,123 @@
+# solana_c_indexer
+
+A Solana blockchain indexer written in C11.
+
+The project is built incrementally; see [ROADMAP.md](ROADMAP.md) for the plan
+and the current state. Milestone M1 (project foundation) is complete: the build
+system, logging, error handling, the arena allocator and configuration loading
+are in place. There is no ingestion pipeline yet.
+
+## Requirements
+
+- A C11 compiler (GCC 9+ or Clang 10+)
+- GNU Make
+- POSIX threads
+- For debug builds: AddressSanitizer and UndefinedBehaviorSanitizer support
+
+No third-party libraries are used so far.
+
+## Building
+
+Use `build.sh`. It checks the toolchain, picks a job count, falls back when the
+sanitizer runtimes are missing, and keeps the output to one line per file:
+
+```sh
+./build.sh            # debug build with sanitizers -> build/debug/indexer
+./build.sh release    # optimized build             -> build/release/indexer
+./build.sh test       # build everything and run the unit tests
+./build.sh clean      # remove build/
+./build.sh rebuild    # clean, then build debug
+```
+
+Overrides, rarely needed:
+
+| Variable | Values | Purpose |
+| --- | --- | --- |
+| `CC` | e.g. `clang` | Override the compiler |
+| `JOBS` | e.g. `1` | Override the parallel job count |
+| `SANITIZE` | `1`, `0` | Force the sanitizers on or off |
+| `VERBOSE` | `1` | Print the full compiler command lines |
+
+The Makefile underneath can still be driven directly (`make BUILD=release`,
+`make test`, `make V=1`) — `build.sh` only wraps it.
+
+Everything is compiled with `-Wall -Wextra -Werror -pedantic -Wshadow
+-Wconversion`, so warnings break the build.
+
+## Running
+
+Use `run.sh`. It loads `.env`, rebuilds if needed, and execs the binary:
+
+```sh
+cp .env.example .env     # then fill in your endpoint
+./run.sh
+./run.sh --log-level trace --start-slot 250000000
+```
+
+| Variable | Values | Purpose |
+| --- | --- | --- |
+| `BUILD` | `debug` (default), `release` | Which binary to build and run |
+| `SKIP_BUILD` | `0` (default), `1` | Run the existing binary without rebuilding |
+| `ENV_FILE` | path | Load a file other than `.env` |
+
+Any flags given to `run.sh` are passed straight to the indexer. The binary can
+also be invoked directly:
+
+```sh
+export SOLANA_RPC_URL="https://your-endpoint.example/"
+./build/debug/indexer --log-level debug
+```
+
+Run `./run.sh --help` for the full list of options.
+
+### Configuration
+
+Settings are resolved from four sources, each overriding the previous one:
+
+1. built-in defaults
+2. a configuration file — `--config PATH`, or `./indexer.conf` when it exists
+3. environment variables
+4. command line flags
+
+| Setting | Environment | Flag | Default |
+| --- | --- | --- | --- |
+| `rpc_url` | `SOLANA_RPC_URL` | `--rpc-url` | *(required)* |
+| `wss_url` | `SOLANA_WSS_URL` | `--wss-url` | *(unset)* |
+| `log_level` | `INDEXER_LOG_LEVEL` | `--log-level` | `info` |
+| `start_slot` | `INDEXER_START_SLOT` | `--start-slot` | `0` (chain tip) |
+| `end_slot` | `INDEXER_END_SLOT` | `--end-slot` | `0` (follow) |
+| `concurrency` | `INDEXER_CONCURRENCY` | `--concurrency` | `4` |
+
+Two starting points are provided: [`.env.example`](.env.example) for the
+environment variables `run.sh` loads, and
+[`indexer.conf.example`](indexer.conf.example) for the file form. Both `.env`
+and `indexer.conf` are gitignored because endpoint URLs often embed an API
+token in the path.
+
+## Layout
+
+```
+include/    public headers, one per module
+src/        implementation; main.c is the entry point
+tests/      unit tests, one binary per tests/test_*.c
+docs/       design notes and operational documentation
+```
+
+| Module | Purpose |
+| --- | --- |
+| `error` | `idx_status` codes plus an `idx_error` context carrying message, file and line |
+| `log` | Leveled, mutex-serialized logging to a single sink |
+| `arena` | Chunked bump allocator for per-block and per-transaction scratch memory |
+| `config` | Layered configuration loading and validation |
+
+See [docs/conventions.md](docs/conventions.md) for the coding conventions these
+modules establish.
+
+## Testing
+
+`./build.sh test` builds one binary per `tests/test_*.c` and runs them all under
+the sanitizers. A non-zero exit from any binary fails the run.
+
+## License
+
+See [LICENSE](LICENSE).
