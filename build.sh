@@ -6,6 +6,7 @@
 #   ./build.sh              debug build with sanitizers (default)
 #   ./build.sh release      optimized build
 #   ./build.sh test         build everything and run the unit tests
+#   ./build.sh tools        build the live-endpoint diagnostic programs
 #   ./build.sh clean        remove all build output
 #   ./build.sh rebuild      clean, then build debug
 #
@@ -124,6 +125,12 @@ case "$COMMAND" in
         run_make debug test
         info "${GREEN}tests passed${RESET}"
         ;;
+    tools)
+        detect_sanitizers
+        info "building the diagnostic tools"
+        run_make debug tools
+        info "${GREEN}built${RESET} build/debug/{wsdump,subscribe,rpcprobe}"
+        ;;
     clean)
         info "removing build output"
         run_make debug clean
@@ -140,6 +147,6 @@ case "$COMMAND" in
         sed -n '3,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         ;;
     *)
-        fail "unknown command '$COMMAND'. Try: debug, release, test, clean, rebuild"
+        fail "unknown command '$COMMAND'. Try: debug, release, test, tools, clean, rebuild"
         ;;
 esac

@@ -3,9 +3,15 @@
 A Solana blockchain indexer written in C11.
 
 The project is built incrementally; see [ROADMAP.md](ROADMAP.md) for the plan
-and the current state. Milestone M1 (project foundation) is complete: the build
-system, logging, error handling, the arena allocator and configuration loading
-are in place. There is no ingestion pipeline yet.
+and the current state, and [docs/decisions.md](docs/decisions.md) for the
+choices that shape it.
+
+Complete so far: the project foundation (M1), the core data structures (M2),
+and most of the transport (M3) — a WebSocket client that follows the chain tip
+through `blockSubscribe`, and an HTTP JSON-RPC client for everything the socket
+cannot replay. The ingestion pipeline that joins them is M4 and does not exist
+yet, so the `indexer` binary still only loads its configuration and exits; the
+transports are exercised through the tools described below.
 
 ## Requirements
 
@@ -14,16 +20,16 @@ are in place. There is no ingestion pipeline yet.
 - POSIX threads
 - For debug builds: AddressSanitizer and UndefinedBehaviorSanitizer support
 
-Starting with milestone M3, libcurl is required for both the JSON-RPC client
-and the WebSocket subscriptions, and it must have `ws`/`wss` compiled in
-(check with `curl --version`):
+libcurl is required for both the JSON-RPC client and the WebSocket
+subscriptions, and it must have `ws`/`wss` compiled in (check with
+`curl --version`):
 
 ```sh
 sudo apt install libcurl4-openssl-dev     # Debian/Ubuntu
 ```
 
-See [docs/decisions.md](docs/decisions.md) for why. Nothing built so far uses
-it, so M1 and M2 compile without it.
+The JSON parser (yyjson) is vendored in `vendor/`, so it needs no installation.
+See [docs/decisions.md](docs/decisions.md) for why each was chosen.
 
 ## Building
 
@@ -124,6 +130,19 @@ docs/       design notes and operational documentation
 | `types` | `idx_pubkey`, `idx_signature`, `idx_hash` and well-known program ids |
 | `vec` | Growable array of fixed-size elements |
 | `map` | Open-addressing hash map with byte-string keys |
+| `json` | Reading and minimal writing, wrapping the vendored yyjson |
+| `ws` | WebSocket transport over libcurl, reassembling fragmented messages |
+| `pubsub` | Subscription registry, notification demux, reconnect and resubscribe |
+| `rpc` | HTTP JSON-RPC client with gzip, retries, failover and batching |
+
+Programs under `tools/` talk to a live endpoint and are built with
+`./build.sh tools`, never by `make test`:
+
+| Tool | Purpose |
+| --- | --- |
+| `wsdump` | Subscribe and report what arrives; saves payloads as fixtures |
+| `subscribe` | Follow the stream through the PubSub layer, reporting slot continuity |
+| `rpcprobe` | Exercise every RPC method, including a skipped slot and a batch |
 
 See [docs/conventions.md](docs/conventions.md) for the coding conventions these
 modules establish.

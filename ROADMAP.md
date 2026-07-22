@@ -51,11 +51,14 @@ everything the socket cannot replay.
 - [x] Keepalive (ping/pong) and idle detection
 - [x] Reconnect with exponential backoff and automatic resubscribe
 - [ ] Record the last slot seen before a disconnect so the gap can be replayed
-- [ ] HTTP JSON-RPC client: request/response envelope, batching, request ids
-- [ ] Methods: `getSlot`, `getBlock`, `getBlocks`, `getBlockHeight`,
+- [x] HTTP JSON-RPC client: request/response envelope, batching, request ids
+- [x] Methods: `getSlot`, `getBlock`, `getBlocks`, `getBlockHeight`,
       `getTransaction`, `getHealth`, `getVersion`
-- [ ] Retry with exponential backoff, timeouts and rate-limit (429) handling
-- [ ] Multiple endpoint support with failover
+- [x] Request gzip: a block is 12.2 MiB of JSON but 0.93 MiB compressed
+- [x] Treat a skipped slot as not-found rather than an error, and split
+      `getBlocks` to whatever range the provider's plan allows
+- [x] Retry with exponential backoff, timeouts and rate-limit (429) handling
+- [x] Multiple endpoint support with failover
 - [ ] Fall back to `slotSubscribe` + `getBlock` when `blockSubscribe` is
       unavailable on the configured endpoint
 
