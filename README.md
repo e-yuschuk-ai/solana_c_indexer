@@ -118,6 +118,12 @@ docs/       design notes and operational documentation
 | `log` | Leveled, mutex-serialized logging to a single sink |
 | `arena` | Chunked bump allocator for per-block and per-transaction scratch memory |
 | `config` | Layered configuration loading and validation |
+| `bytes` | `idx_slice` views, a bounds-checked read cursor, a growable buffer and hex |
+| `base58` | Bitcoin-alphabet base58, as used for pubkeys and signatures |
+| `base64` | RFC 4648 base64, as returned by the RPC for account and transaction data |
+| `types` | `idx_pubkey`, `idx_signature`, `idx_hash` and well-known program ids |
+| `vec` | Growable array of fixed-size elements |
+| `map` | Open-addressing hash map with byte-string keys |
 
 See [docs/conventions.md](docs/conventions.md) for the coding conventions these
 modules establish.

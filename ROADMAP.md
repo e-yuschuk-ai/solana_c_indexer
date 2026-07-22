@@ -27,12 +27,12 @@ Conventions established here are documented in `docs/conventions.md`.
 
 ## M2 — Core data structures
 
-- [ ] Fixed-width integer and byte-buffer helpers (`slice`, `buffer`)
-- [ ] Base58 encode/decode
-- [ ] Base64 encode/decode
-- [ ] Pubkey, signature and hash types (32/64-byte wrappers)
-- [ ] Dynamic array and hash map primitives
-- [ ] Unit tests for every encoder/decoder against known vectors
+- [x] Fixed-width integer and byte-buffer helpers (`slice`, `cursor`, `buffer`)
+- [x] Base58 encode/decode
+- [x] Base64 encode/decode
+- [x] Pubkey, signature and hash types (32/64-byte wrappers)
+- [x] Dynamic array and hash map primitives
+- [x] Unit tests for every encoder/decoder against known vectors
 
 ## M3 — Transport
 
