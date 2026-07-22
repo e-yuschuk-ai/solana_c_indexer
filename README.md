@@ -102,6 +102,10 @@ Settings are resolved from four sources, each overriding the previous one:
 | `start_slot` | `INDEXER_START_SLOT` | `--start-slot` | `0` (chain tip) |
 | `end_slot` | `INDEXER_END_SLOT` | `--end-slot` | `0` (follow) |
 | `concurrency` | `INDEXER_CONCURRENCY` | `--concurrency` | `4` |
+| `commitment` | `INDEXER_COMMITMENT` | `--commitment` | `confirmed` |
+| `tx_details` | `INDEXER_TX_DETAILS` | `--tx-details` | `full` |
+| `block_filter` | `INDEXER_BLOCK_FILTER` | `--block-filter` | `all` |
+| `blocks_range_limit` | `INDEXER_BLOCKS_RANGE_LIMIT` | `--blocks-range-limit` | plan-dependent |
 
 Two starting points are provided: [`.env.example`](.env.example) for the
 environment variables `run.sh` loads, and

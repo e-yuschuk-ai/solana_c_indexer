@@ -85,10 +85,23 @@ void idx_pubsub_close(idx_pubsub *pubsub);
  * Registers a subscription and returns its handle. `method` and `params_json`
  * are copied, and re-sent verbatim after every reconnect, so the caller need
  * not keep them alive.
+ *
+ * `unsubscribe_method` is the matching teardown call (e.g. "blockUnsubscribe"
+ * for "blockSubscribe"), used by idx_pubsub_unsubscribe; NULL if the
+ * subscription is never torn down individually.
  */
 idx_status idx_pubsub_subscribe(idx_pubsub *pubsub, const char *method,
+                                const char *unsubscribe_method,
                                 const char *params_json, uint64_t *handle,
                                 idx_error *err);
+
+/*
+ * Cancels a subscription. Sends the unsubscribe call when connected and
+ * confirmed, and removes it from the registry so it is not re-established on
+ * the next reconnect. Returns IDX_ERR_NOT_FOUND for an unknown handle.
+ */
+idx_status idx_pubsub_unsubscribe(idx_pubsub *pubsub, uint64_t handle,
+                                  idx_error *err);
 
 /*
  * Waits up to `timeout_ms` for one notification.

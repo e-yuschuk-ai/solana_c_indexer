@@ -92,8 +92,9 @@ static void test_accessors_tolerate_null(void) {
 
     idx_pubsub_message message;
     TEST_EQ_INT(idx_pubsub_poll(NULL, 0, &message, NULL), IDX_ERR_INVALID_ARG);
-    TEST_EQ_INT(idx_pubsub_subscribe(NULL, "m", NULL, NULL, NULL),
+    TEST_EQ_INT(idx_pubsub_subscribe(NULL, "m", NULL, NULL, NULL, NULL),
                 IDX_ERR_INVALID_ARG);
+    TEST_EQ_INT(idx_pubsub_unsubscribe(NULL, 1, NULL), IDX_ERR_INVALID_ARG);
 }
 
 TEST_MAIN({

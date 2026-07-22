@@ -14,7 +14,96 @@ static void test_defaults(void) {
     TEST_EQ_UINT(cfg.start_slot, 0u);
     TEST_EQ_UINT(cfg.end_slot, 0u);
     TEST_EQ_UINT(cfg.concurrency, 4u);
+    TEST_EQ_STR(cfg.commitment, "confirmed");
+    TEST_EQ_INT(cfg.tx_details, IDX_TX_DETAILS_FULL);
+    TEST_EQ_STR(cfg.block_filter, "all");
+    TEST_EQ_UINT(cfg.blocks_range_limit, 0u);
     TEST_ASSERT(!cfg.help);
+}
+
+static void test_subscription_settings(void) {
+    idx_config cfg;
+    idx_config_defaults(&cfg);
+
+    TEST_EQ_INT(idx_config_apply_kv(&cfg, "commitment", "finalized", "t", NULL),
+                IDX_OK);
+    TEST_EQ_STR(cfg.commitment, "finalized");
+    TEST_EQ_INT(idx_config_apply_kv(&cfg, "commitment", "processed", "t", NULL),
+                IDX_ERR_PARSE);
+
+    TEST_EQ_INT(idx_config_apply_kv(&cfg, "tx_details", "signatures", "t", NULL),
+                IDX_OK);
+    TEST_EQ_INT(cfg.tx_details, IDX_TX_DETAILS_SIGNATURES);
+    /* The RPC alias must work too. */
+    TEST_EQ_INT(
+        idx_config_apply_kv(&cfg, "transaction_details", "none", "t", NULL),
+        IDX_OK);
+    TEST_EQ_INT(cfg.tx_details, IDX_TX_DETAILS_NONE);
+    TEST_EQ_INT(idx_config_apply_kv(&cfg, "tx_details", "verbose", "t", NULL),
+                IDX_ERR_PARSE);
+
+    TEST_EQ_INT(idx_config_apply_kv(&cfg, "block_filter",
+                                    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                                    "t", NULL),
+                IDX_OK);
+    TEST_EQ_STR(cfg.block_filter,
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+
+    TEST_EQ_INT(
+        idx_config_apply_kv(&cfg, "blocks_range_limit", "5", "t", NULL), IDX_OK);
+    TEST_EQ_UINT(cfg.blocks_range_limit, 5u);
+}
+
+static void test_tx_details_names(void) {
+    TEST_EQ_STR(idx_tx_details_name(IDX_TX_DETAILS_FULL), "full");
+    TEST_EQ_STR(idx_tx_details_name(IDX_TX_DETAILS_ACCOUNTS), "accounts");
+    TEST_EQ_STR(idx_tx_details_name(IDX_TX_DETAILS_SIGNATURES), "signatures");
+    TEST_EQ_STR(idx_tx_details_name(IDX_TX_DETAILS_NONE), "none");
+    TEST_EQ_STR(idx_tx_details_name((idx_tx_details)99), "unknown");
+
+    idx_tx_details details;
+    TEST_EQ_INT(idx_tx_details_parse("FULL", &details), IDX_OK);
+    TEST_EQ_INT(details, IDX_TX_DETAILS_FULL);
+    TEST_EQ_INT(idx_tx_details_parse("nope", &details), IDX_ERR_PARSE);
+    TEST_EQ_INT(idx_tx_details_parse(NULL, &details), IDX_ERR_INVALID_ARG);
+}
+
+/* The generated params must be valid JSON and carry the config's choices. */
+static void test_block_subscribe_params(void) {
+    idx_config cfg;
+    idx_config_defaults(&cfg);
+
+    char params[IDX_CONFIG_STR_MAX + 128];
+    idx_error err;
+    idx_error_clear(&err);
+
+    /* Default: filter is the bare string "all". */
+    TEST_EQ_INT(idx_config_block_subscribe_params(&cfg, params, sizeof(params),
+                                                  &err),
+                IDX_OK);
+    TEST_ASSERT(strstr(params, "[\"all\",{") == params);
+    TEST_ASSERT(strstr(params, "\"commitment\":\"confirmed\"") != NULL);
+    TEST_ASSERT(strstr(params, "\"transactionDetails\":\"full\"") != NULL);
+
+    /* A key becomes a mentions filter object. */
+    idx_config_apply_kv(&cfg, "block_filter", "Vote111111111111111111111111111",
+                        "t", NULL);
+    idx_config_apply_kv(&cfg, "tx_details", "accounts", "t", NULL);
+    idx_config_apply_kv(&cfg, "commitment", "finalized", "t", NULL);
+    TEST_EQ_INT(idx_config_block_subscribe_params(&cfg, params, sizeof(params),
+                                                  &err),
+                IDX_OK);
+    TEST_ASSERT(strstr(params,
+                       "{\"mentionsAccountOrProgram\":"
+                       "\"Vote111111111111111111111111111\"}") != NULL);
+    TEST_ASSERT(strstr(params, "\"transactionDetails\":\"accounts\"") != NULL);
+    TEST_ASSERT(strstr(params, "\"commitment\":\"finalized\"") != NULL);
+
+    /* A buffer too small must be reported, not overrun. */
+    char tiny[16];
+    TEST_EQ_INT(
+        idx_config_block_subscribe_params(&cfg, tiny, sizeof(tiny), NULL),
+        IDX_ERR_RANGE);
 }
 
 static void test_apply_kv(void) {
@@ -242,6 +331,9 @@ static void test_validate(void) {
 
 TEST_MAIN({
     TEST_RUN(test_defaults);
+    TEST_RUN(test_subscription_settings);
+    TEST_RUN(test_tx_details_names);
+    TEST_RUN(test_block_subscribe_params);
     TEST_RUN(test_apply_kv);
     TEST_RUN(test_string_too_long);
     TEST_RUN(test_apply_args);

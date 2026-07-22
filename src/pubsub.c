@@ -17,6 +17,7 @@ typedef struct {
     uint64_t request_id;  /* id of the outstanding subscribe request */
     uint64_t server_id;   /* what the server assigned, 0 until confirmed */
     char *method;
+    char *unsubscribe_method; /* NULL if never torn down individually */
     char *params;
     bool confirmed;
 } subscription;
@@ -72,8 +73,10 @@ static subscription *subscription_at(idx_pubsub *pubsub, size_t index) {
 
 static void subscription_release(subscription *entry) {
     free(entry->method);
+    free(entry->unsubscribe_method);
     free(entry->params);
     entry->method = NULL;
+    entry->unsubscribe_method = NULL;
     entry->params = NULL;
 }
 
@@ -204,6 +207,7 @@ void idx_pubsub_close(idx_pubsub *pubsub) {
 }
 
 idx_status idx_pubsub_subscribe(idx_pubsub *pubsub, const char *method,
+                                const char *unsubscribe_method,
                                 const char *params_json, uint64_t *handle,
                                 idx_error *err) {
     if (pubsub == NULL || method == NULL) {
@@ -216,8 +220,11 @@ idx_status idx_pubsub_subscribe(idx_pubsub *pubsub, const char *method,
     entry.handle = pubsub->next_handle++;
     entry.method = strdup(method);
     entry.params = (params_json != NULL) ? strdup(params_json) : NULL;
+    entry.unsubscribe_method =
+        (unsubscribe_method != NULL) ? strdup(unsubscribe_method) : NULL;
 
-    if (entry.method == NULL || (params_json != NULL && entry.params == NULL)) {
+    if (entry.method == NULL || (params_json != NULL && entry.params == NULL) ||
+        (unsubscribe_method != NULL && entry.unsubscribe_method == NULL)) {
         subscription_release(&entry);
         return IDX_FAIL(err, IDX_ERR_NO_MEMORY,
                         "failed to copy the subscription");
@@ -243,6 +250,59 @@ idx_status idx_pubsub_subscribe(idx_pubsub *pubsub, const char *method,
         *handle = entry.handle;
     }
     return IDX_OK;
+}
+
+idx_status idx_pubsub_unsubscribe(idx_pubsub *pubsub, uint64_t handle,
+                                  idx_error *err) {
+    if (pubsub == NULL) {
+        return IDX_FAIL(err, IDX_ERR_INVALID_ARG, "pubsub must not be NULL");
+    }
+
+    size_t count = idx_vec_len(&pubsub->subscriptions);
+    for (size_t i = 0; i < count; i++) {
+        subscription *entry = subscription_at(pubsub, i);
+        if (entry->handle != handle) {
+            continue;
+        }
+
+        /*
+         * Best-effort teardown: tell the server to stop only if we are
+         * connected, the subscription was confirmed, and it has an
+         * unsubscribe method. A failure here does not matter — the entry is
+         * being removed, so it will not be re-established.
+         */
+        if (pubsub->ws != NULL && entry->confirmed &&
+            entry->unsubscribe_method != NULL) {
+            char params[64];
+            snprintf(params, sizeof(params), "[%llu]",
+                     (unsigned long long)entry->server_id);
+            idx_buffer request;
+            idx_buffer_init(&request);
+            if (idx_json_write_rpc_request(&request, pubsub->next_request_id++,
+                                           entry->unsubscribe_method, params,
+                                           NULL) == IDX_OK) {
+                (void)idx_ws_send_text(pubsub->ws, idx_buffer_slice(&request),
+                                       NULL);
+            }
+            idx_buffer_free(&request);
+            IDX_DEBUG("sent %s for subscription %llu",
+                      entry->unsubscribe_method,
+                      (unsigned long long)entry->server_id);
+        }
+
+        subscription_release(entry);
+        /* Compact by moving the last entry into the hole; order does not
+         * matter to the registry. */
+        if (i != count - 1) {
+            subscription *last = subscription_at(pubsub, count - 1);
+            *entry = *last;
+        }
+        idx_vec_pop(&pubsub->subscriptions, NULL);
+        return IDX_OK;
+    }
+
+    return IDX_FAIL(err, IDX_ERR_NOT_FOUND, "no subscription with handle %llu",
+                    (unsigned long long)handle);
 }
 
 /* Backoff with full jitter, so reconnecting clients do not synchronize. */

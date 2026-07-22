@@ -29,3 +29,24 @@ end_slot = 0
 # Number of parallel block fetchers (1-1024).
 # Environment: INDEXER_CONCURRENCY   Flag: --concurrency
 concurrency = 4
+
+# Commitment level: confirmed (default, ~1 slot behind) or finalized
+# (~13 slots behind but never reorged).
+# Environment: INDEXER_COMMITMENT   Flag: --commitment
+commitment = confirmed
+
+# How much of each transaction to fetch: full (default), accounts,
+# signatures or none. Lower detail cuts bandwidth by orders of magnitude —
+# a full block is ~5 MiB, the same block as signatures is ~0.1 MiB.
+# Environment: INDEXER_TX_DETAILS   Flag: --tx-details
+tx_details = full
+
+# Which blocks to receive: 'all' (default), or a program/account base58 key
+# to receive only blocks mentioning it.
+# Environment: INDEXER_BLOCK_FILTER   Flag: --block-filter
+block_filter = all
+
+# Largest slot span a single getBlocks call may request. Providers cap this
+# per plan (some free tiers allow only 5). 0 uses the client default.
+# Environment: INDEXER_BLOCKS_RANGE_LIMIT   Flag: --blocks-range-limit
+# blocks_range_limit = 0

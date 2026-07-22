@@ -46,11 +46,10 @@ everything the socket cannot replay.
 - [x] Fragment reassembly into a growable buffer with a high-water mark,
       sized for the measured 9–11 MiB notifications
 - [x] JSON-RPC subscription envelope: subscribe, confirm id, notification demux
-- [~] `blockSubscribe` works; `blockUnsubscribe` and wiring the filter and
-      `transactionDetails` level to the configuration are still pending
+- [x] `blockSubscribe` / `blockUnsubscribe`, with the filter and
+      `transactionDetails` level taken from the configuration
 - [x] Keepalive (ping/pong) and idle detection
 - [x] Reconnect with exponential backoff and automatic resubscribe
-- [ ] Record the last slot seen before a disconnect so the gap can be replayed
 - [x] HTTP JSON-RPC client: request/response envelope, batching, request ids
 - [x] Methods: `getSlot`, `getBlock`, `getBlocks`, `getBlockHeight`,
       `getTransaction`, `getHealth`, `getVersion`
@@ -59,7 +58,7 @@ everything the socket cannot replay.
       `getBlocks` to whatever range the provider's plan allows
 - [x] Retry with exponential backoff, timeouts and rate-limit (429) handling
 - [x] Multiple endpoint support with failover
-- [ ] Fall back to `slotSubscribe` + `getBlock` when `blockSubscribe` is
+- [x] Fall back to `slotSubscribe` + `getBlock` when `blockSubscribe` is
       unavailable on the configured endpoint
 
 ## M4 — Ingestion pipeline
@@ -68,7 +67,8 @@ Real-time by default: blocks arrive on the socket, and the RPC client recovers
 whatever the socket missed. The socket delivers ~12 MiB/s, so backpressure
 handling is a requirement rather than a refinement.
 
-- [ ] Slot cursor: track last indexed slot, resume after restart
+- [ ] Slot cursor: track last indexed slot, resume after restart, and record
+      the last slot seen before a disconnect so the gap can be replayed
 - [ ] Follow mode driven by `blockSubscribe` notifications
 - [ ] Bounded queue between the receive loop and the decoders, so a slow
       consumer never stalls the socket read

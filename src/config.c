@@ -5,9 +5,36 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #define IDX_CONFIG_DEFAULT_FILE "indexer.conf"
 #define IDX_CONFIG_LINE_MAX 1024
+
+static const char *const k_tx_details_names[] = {"full", "accounts",
+                                                 "signatures", "none"};
+static const size_t k_tx_details_count =
+    sizeof(k_tx_details_names) / sizeof(k_tx_details_names[0]);
+
+const char *idx_tx_details_name(idx_tx_details details) {
+    size_t index = (size_t)details;
+    if (index >= k_tx_details_count) {
+        return "unknown";
+    }
+    return k_tx_details_names[index];
+}
+
+idx_status idx_tx_details_parse(const char *name, idx_tx_details *out) {
+    if (name == NULL || out == NULL) {
+        return IDX_ERR_INVALID_ARG;
+    }
+    for (size_t i = 0; i < k_tx_details_count; i++) {
+        if (strcasecmp(name, k_tx_details_names[i]) == 0) {
+            *out = (idx_tx_details)i;
+            return IDX_OK;
+        }
+    }
+    return IDX_ERR_PARSE;
+}
 
 void idx_config_defaults(idx_config *cfg) {
     if (cfg == NULL) {
@@ -18,6 +45,10 @@ void idx_config_defaults(idx_config *cfg) {
     cfg->start_slot = 0;
     cfg->end_slot = 0;
     cfg->concurrency = 4;
+    snprintf(cfg->commitment, sizeof(cfg->commitment), "confirmed");
+    cfg->tx_details = IDX_TX_DETAILS_FULL;
+    snprintf(cfg->block_filter, sizeof(cfg->block_filter), "all");
+    cfg->blocks_range_limit = 0;
     cfg->help = false;
 }
 
@@ -107,6 +138,34 @@ idx_status idx_config_apply_kv(idx_config *cfg, const char *key,
         }
         cfg->concurrency = (uint32_t)parsed;
         return IDX_OK;
+    }
+    if (strcmp(key, "commitment") == 0) {
+        if (strcmp(value, "confirmed") != 0 && strcmp(value, "finalized") != 0) {
+            return IDX_FAIL(err, IDX_ERR_PARSE,
+                            "%s: commitment = %s must be confirmed or finalized",
+                            source, value);
+        }
+        return set_string(cfg->commitment, sizeof(cfg->commitment), value, key,
+                          source, err);
+    }
+    if (strcmp(key, "tx_details") == 0 ||
+        strcmp(key, "transaction_details") == 0) {
+        idx_tx_details details;
+        if (idx_tx_details_parse(value, &details) != IDX_OK) {
+            return IDX_FAIL(err, IDX_ERR_PARSE,
+                            "%s: tx_details = %s is not one of "
+                            "full/accounts/signatures/none",
+                            source, value);
+        }
+        cfg->tx_details = details;
+        return IDX_OK;
+    }
+    if (strcmp(key, "block_filter") == 0) {
+        return set_string(cfg->block_filter, sizeof(cfg->block_filter), value,
+                          key, source, err);
+    }
+    if (strcmp(key, "blocks_range_limit") == 0) {
+        return parse_u64(value, &cfg->blocks_range_limit, key, source, err);
     }
     if (strcmp(key, "config") == 0 || strcmp(key, "config_file") == 0) {
         return set_string(cfg->config_file, sizeof(cfg->config_file), value,
@@ -210,6 +269,10 @@ idx_status idx_config_apply_env(idx_config *cfg, idx_error *err) {
         {"INDEXER_START_SLOT", "start_slot"},
         {"INDEXER_END_SLOT", "end_slot"},
         {"INDEXER_CONCURRENCY", "concurrency"},
+        {"INDEXER_COMMITMENT", "commitment"},
+        {"INDEXER_TX_DETAILS", "tx_details"},
+        {"INDEXER_BLOCK_FILTER", "block_filter"},
+        {"INDEXER_BLOCKS_RANGE_LIMIT", "blocks_range_limit"},
     };
 
     if (cfg == NULL) {
@@ -391,6 +454,44 @@ idx_status idx_config_validate(const idx_config *cfg, idx_error *err) {
                         "concurrency must be between 1 and %u",
                         IDX_CONFIG_MAX_CONCURRENCY);
     }
+    if (cfg->commitment[0] == '\0') {
+        return IDX_FAIL(err, IDX_ERR_INVALID_ARG, "commitment must be set");
+    }
+    if (cfg->block_filter[0] == '\0') {
+        return IDX_FAIL(err, IDX_ERR_INVALID_ARG,
+                        "block_filter must be 'all' or a base58 key");
+    }
+    return IDX_OK;
+}
+
+idx_status idx_config_block_subscribe_params(const idx_config *cfg, char *out,
+                                             size_t out_size, idx_error *err) {
+    if (cfg == NULL || out == NULL) {
+        return IDX_FAIL(err, IDX_ERR_INVALID_ARG,
+                        "cfg and out must not be NULL");
+    }
+
+    /* "all" is a bare string; a key becomes a mentions filter object. */
+    char filter[IDX_CONFIG_STR_MAX + 40];
+    if (strcmp(cfg->block_filter, "all") == 0) {
+        snprintf(filter, sizeof(filter), "\"all\"");
+    } else {
+        snprintf(filter, sizeof(filter),
+                 "{\"mentionsAccountOrProgram\":\"%s\"}", cfg->block_filter);
+    }
+
+    int written = snprintf(
+        out, out_size,
+        "[%s,{\"commitment\":\"%s\",\"encoding\":\"json\","
+        "\"transactionDetails\":\"%s\",\"maxSupportedTransactionVersion\":0,"
+        "\"showRewards\":false}]",
+        filter, cfg->commitment, idx_tx_details_name(cfg->tx_details));
+
+    if (written < 0 || (size_t)written >= out_size) {
+        return IDX_FAIL(err, IDX_ERR_RANGE,
+                        "blockSubscribe params need %d bytes, got %zu",
+                        written, out_size);
+    }
     return IDX_OK;
 }
 
@@ -407,6 +508,13 @@ void idx_config_log(const idx_config *cfg) {
     IDX_INFO("config: end_slot = %" PRIu64 "%s", cfg->end_slot,
              (cfg->end_slot == 0) ? " (follow)" : "");
     IDX_INFO("config: concurrency = %" PRIu32, cfg->concurrency);
+    IDX_INFO("config: commitment = %s", cfg->commitment);
+    IDX_INFO("config: tx_details = %s", idx_tx_details_name(cfg->tx_details));
+    IDX_INFO("config: block_filter = %s", cfg->block_filter);
+    if (cfg->blocks_range_limit != 0) {
+        IDX_INFO("config: blocks_range_limit = %" PRIu64,
+                 cfg->blocks_range_limit);
+    }
     if (cfg->config_file[0] != '\0') {
         IDX_INFO("config: loaded from %s", cfg->config_file);
     }
@@ -424,11 +532,17 @@ void idx_config_usage(FILE *out, const char *program) {
             "      --start-slot N     First slot to index (0 = chain tip)\n"
             "      --end-slot N       Last slot to index (0 = follow the tip)\n"
             "      --concurrency N    Parallel fetchers (1-%u)\n"
+            "      --commitment C     confirmed (default) or finalized\n"
+            "      --tx-details D     full, accounts, signatures or none\n"
+            "      --block-filter F   'all' (default) or a program/account key\n"
+            "      --blocks-range-limit N  getBlocks span cap for the plan\n"
             "  -h, --help             Show this message\n"
             "\n"
             "Environment:\n"
             "  SOLANA_RPC_URL, SOLANA_WSS_URL, INDEXER_LOG_LEVEL,\n"
-            "  INDEXER_START_SLOT, INDEXER_END_SLOT, INDEXER_CONCURRENCY\n"
+            "  INDEXER_START_SLOT, INDEXER_END_SLOT, INDEXER_CONCURRENCY,\n"
+            "  INDEXER_COMMITMENT, INDEXER_TX_DETAILS, INDEXER_BLOCK_FILTER,\n"
+            "  INDEXER_BLOCKS_RANGE_LIMIT\n"
             "\n"
             "Precedence: defaults < config file < environment < command line\n",
             (program != NULL) ? program : "indexer", IDX_CONFIG_DEFAULT_FILE,
