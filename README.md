@@ -14,7 +14,16 @@ are in place. There is no ingestion pipeline yet.
 - POSIX threads
 - For debug builds: AddressSanitizer and UndefinedBehaviorSanitizer support
 
-No third-party libraries are used so far.
+Starting with milestone M3, libcurl is required for both the JSON-RPC client
+and the WebSocket subscriptions, and it must have `ws`/`wss` compiled in
+(check with `curl --version`):
+
+```sh
+sudo apt install libcurl4-openssl-dev     # Debian/Ubuntu
+```
+
+See [docs/decisions.md](docs/decisions.md) for why. Nothing built so far uses
+it, so M1 and M2 compile without it.
 
 ## Building
 

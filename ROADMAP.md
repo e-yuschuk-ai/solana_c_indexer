@@ -6,6 +6,9 @@ in the same change that implements them.
 
 Status legend: `[ ]` pending · `[~]` in progress · `[x]` done
 
+Design decisions that shape more than one milestone are recorded in
+[docs/decisions.md](docs/decisions.md).
+
 ---
 
 ## M1 — Project foundation
@@ -31,24 +34,50 @@ Conventions established here are documented in `docs/conventions.md`.
 - [ ] Dynamic array and hash map primitives
 - [ ] Unit tests for every encoder/decoder against known vectors
 
-## M3 — RPC client
+## M3 — Transport
 
-- [ ] HTTP client (libcurl or a minimal socket-based client — decide and document)
-- [ ] JSON parser/serializer (vendored or hand-written — decide and document)
-- [ ] JSON-RPC 2.0 request/response envelope
-- [ ] Methods: `getSlot`, `getBlock`, `getBlockHeight`, `getBlocks`,
-      `getTransaction`, `getHealth`
-- [ ] Retry with exponential backoff, timeouts and rate-limit handling
+Both transports are built on libcurl (decision D1). `blockSubscribe` over the
+WebSocket is the hot path (decision D1a); HTTP is the recovery path for
+everything the socket cannot replay.
+
+- [ ] Vendor or link the JSON parser (decision D2) and wrap it behind `idx_json`
+- [ ] libcurl initialization, TLS verification and shared connection setup
+- [ ] WebSocket connection over `wss://` with TLS verification
+- [ ] Fragment reassembly into a growable buffer with a high-water mark,
+      sized for the measured 4–8 MiB notifications
+- [ ] JSON-RPC subscription envelope: subscribe, confirm id, notification demux
+- [ ] `blockSubscribe` / `blockUnsubscribe`, with the filter and
+      `transactionDetails` level taken from the configuration
+- [ ] Keepalive (ping/pong) and idle detection
+- [ ] Reconnect with exponential backoff and automatic resubscribe
+- [ ] Record the last slot seen before a disconnect so the gap can be replayed
+- [ ] HTTP JSON-RPC client: request/response envelope, batching, request ids
+- [ ] Methods: `getSlot`, `getBlock`, `getBlocks`, `getBlockHeight`,
+      `getTransaction`, `getHealth`, `getVersion`
+- [ ] Retry with exponential backoff, timeouts and rate-limit (429) handling
 - [ ] Multiple endpoint support with failover
+- [ ] Fall back to `slotSubscribe` + `getBlock` when `blockSubscribe` is
+      unavailable on the configured endpoint
 
 ## M4 — Ingestion pipeline
 
+Real-time by default: blocks arrive on the socket, and the RPC client recovers
+whatever the socket missed. The socket delivers ~12 MiB/s, so backpressure
+handling is a requirement rather than a refinement.
+
 - [ ] Slot cursor: track last indexed slot, resume after restart
-- [ ] Block fetch loop with configurable concurrency
-- [ ] Handle skipped slots and missing blocks
-- [ ] Backfill mode (historical range) and follow mode (chain tip)
-- [ ] Bounded queue between fetchers and processors
-- [ ] Graceful shutdown on `SIGINT`/`SIGTERM`
+- [ ] Follow mode driven by `blockSubscribe` notifications
+- [ ] Bounded queue between the receive loop and the decoders, so a slow
+      consumer never stalls the socket read
+- [ ] Overflow policy: abandon the socket backlog and record the affected slot
+      range as a gap rather than letting the provider drop the connection
+- [ ] Gap detection: any distance between the cursor and a notified slot is a
+      hole, whatever caused it
+- [ ] Gap and backfill fetching over HTTP with configurable concurrency
+- [ ] Backfill mode for historical ranges, sharing the gap fetch path
+- [ ] Handle skipped slots and blocks the endpoint no longer retains
+- [ ] Out-of-order arrival: commit in slot order, buffer what arrives early
+- [ ] Graceful shutdown on `SIGINT`/`SIGTERM`, draining in-flight work
 
 ## M5 — Decoding
 
@@ -60,25 +89,56 @@ Conventions established here are documented in `docs/conventions.md`.
 - [ ] Transaction metadata: status, fee, pre/post balances, token balances, logs
 - [ ] Built-in program instruction decoders (System, SPL Token, SPL Token-2022)
 
-## M6 — Storage
+## M6 — Domain decoding
 
-- [ ] Storage abstraction layer (backend behind an interface)
-- [ ] First backend implementation (PostgreSQL via libpq — decide and document)
-- [ ] Schema: slots, blocks, transactions, instructions, accounts, token balances
-- [ ] Batched writes inside transactions
-- [ ] Idempotent upserts so re-indexing a slot is safe
-- [ ] Schema migrations
-- [ ] Reorg handling: detect and roll back orphaned slots
+Turns decoded instructions into the entities the storage tiers hold. Scope
+depends on decision D5, still open.
 
-## M7 — Observability and operations
+- [ ] Transfer extraction from SPL Token and System instructions
+- [ ] Mint and burn extraction
+- [ ] Per-DEX swap decoders, one module per venue
+- [ ] Normalized trade record: venue, market, side, amounts, price, payer
+- [ ] Bar derivation from trades: OHLCV per market and interval
+- [ ] Bar recomputation for a slot range, used by the reorg path (D4)
+- [ ] Golden-file tests: real blocks in, expected entities out
+
+## M7 — Storage
+
+Two tiers per decision D4: PostgreSQL for `confirmed`, ClickHouse for
+`finalized`. Sized for the ~2600 transactions/s that D1a commits to.
+
+- [ ] Storage abstraction layer, one interface per tier
+- [ ] PostgreSQL client over libpq: connection handling, prepared statements
+- [ ] Confirmed schema: trades, mints, transfers, bars, indexed by slot
+- [ ] Reorg path in one transaction: delete at or above the reorged slot,
+      rewrite, and recompute the affected bars
+- [ ] Retention: drop confirmed rows once promoted and past a safety margin
+- [ ] ClickHouse HTTP client: query, insert, error and exception-code handling
+- [ ] `RowBinary` serialization for the insert path (`JSONEachRow` for
+      development and debugging)
+- [ ] Finalized schema: denormalized, ordered by `(slot, transaction_index)`,
+      partitioned by slot range, with column codecs where they pay off
+- [ ] Batching writer: accumulate rows, flush on row count or time bound,
+      never one insert per block (`TOO_MANY_PARTS`)
+- [ ] Re-indexing a slot is safe: `ReplacingMergeTree` keyed on the sort key
+      with a version column
+- [ ] Promotion path: on finalization, bulk read from PostgreSQL and batch
+      insert into ClickHouse without refetching the block
+- [ ] Schema migrations for both tiers
+- [ ] Backpressure from the writers to the ingestion queue
+
+## M8 — Observability and operations
 
 - [ ] Metrics: slots/sec, transactions/sec, lag behind chain tip, error counts
+- [ ] WebSocket health: reconnect count, time since last notification
+- [ ] Promotion lag: slots sitting in the confirmed tier awaiting finalization
+- [ ] Reorg counter and depth histogram
 - [ ] Health and readiness endpoints
 - [ ] Structured log output
 - [ ] Dockerfile and example deployment configuration
 - [ ] Runbook in `docs/` for common failure modes
 
-## M8 — Query interface
+## M9 — Query interface
 
 - [ ] Read API over indexed data (HTTP + JSON)
 - [ ] Queries: transaction by signature, transactions by account, block by slot
@@ -89,8 +149,7 @@ Conventions established here are documented in `docs/conventions.md`.
 
 ## Backlog (not scheduled)
 
-- [ ] Geyser plugin ingestion instead of polling RPC
-- [ ] WebSocket subscriptions for lower latency at the tip
+- [ ] Geyser plugin ingestion instead of RPC
 - [ ] Account state indexing (not just transactions)
 - [ ] Pluggable custom program decoders
 - [ ] Alternative storage backends (SQLite, ClickHouse)
