@@ -40,7 +40,7 @@ Both transports are built on libcurl (decision D1). `blockSubscribe` over the
 WebSocket is the hot path (decision D1a); HTTP is the recovery path for
 everything the socket cannot replay.
 
-- [ ] Vendor or link the JSON parser (decision D2) and wrap it behind `idx_json`
+- [x] Vendor the JSON parser (decision D2) and wrap it behind `idx_json`
 - [ ] libcurl initialization, TLS verification and shared connection setup
 - [ ] WebSocket connection over `wss://` with TLS verification
 - [ ] Fragment reassembly into a growable buffer with a high-water mark,
@@ -152,6 +152,6 @@ Two tiers per decision D4: PostgreSQL for `confirmed`, ClickHouse for
 - [ ] Geyser plugin ingestion instead of RPC
 - [ ] Account state indexing (not just transactions)
 - [ ] Pluggable custom program decoders
-- [ ] Alternative storage backends (SQLite, ClickHouse)
+- [ ] Alternative storage backends behind the M7 interface
 - [ ] Parallel backfill sharded across processes
 - [ ] Fuzzing harness for the decoders

@@ -120,21 +120,41 @@ already implements.
 
 ---
 
-## D2 — JSON parser
+## D2 — yyjson, vendored behind `idx_json`
 
-**Status:** open · **Due:** start of M3
+**Status:** accepted · **Affects:** M3, M5
 
 Measurements in D1a put this at roughly 12 MiB of JSON per second, sustained,
-containing ~2600 transactions/s. This is a throughput decision, not a
-convenience one: a DOM parser that allocates a node per value will dominate the
-profile and is likely to fall behind the socket outright.
+containing ~2600 transactions/s, so the parser sits on the critical path.
 
-Candidates: vendoring `yyjson` (single translation unit, MIT, among the fastest
-available, supports both DOM and incremental use), `cJSON` (simplest, allocates
-heavily), or a hand-written streaming parser tailored to the RPC responses.
+**Decision.** Vendor `yyjson` 0.12.0 (MIT, single translation unit, no
+dependencies) in `vendor/yyjson/`, reached only through `include/json.h`.
+Nothing outside `src/json.c` includes `yyjson.h`.
 
-Current leaning is to vendor `yyjson` and hide it behind an `idx_json` wrapper,
-so a later move to a hand-written parser does not touch call sites.
+### Measured throughput
+
+A real 5.25 MiB `blockSubscribe` notification containing 1316 transactions,
+parsed 30 times, release build:
+
+| mode | ms/block | MiB/s | blocks/s |
+| --- | --- | --- | --- |
+| copying parse | 3.0 | 1741 | 332 |
+| in-situ parse (incl. the memcpy) | 2.8 | 1878 | 358 |
+
+Against a requirement of ~12 MiB/s and ~2.5 blocks/s, that is roughly two
+orders of magnitude of headroom.
+
+### Consequences
+
+- **Parsing is not the bottleneck and should not be optimized further.** The
+  in-situ path is only ~8% faster here, so it is worth using where the buffer
+  is already owned and disposable, but it is not worth contorting the receive
+  loop for.
+- **This confirms the expectation in D3** that storage, not decoding, is what
+  M7 has to be designed around.
+- Rejected: `cJSON` (allocates a node per value), and a hand-written streaming
+  parser (with this much headroom, it would buy nothing for considerable
+  effort and risk).
 
 ---
 

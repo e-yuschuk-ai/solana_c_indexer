@@ -29,10 +29,17 @@ BUILD_DIR := build/$(BUILD)
 OBJ_DIR   := $(BUILD_DIR)/obj
 BIN       := $(BUILD_DIR)/$(BIN_NAME)
 
+CURL_CFLAGS := $(shell curl-config --cflags 2>/dev/null)
+CURL_LIBS   := $(shell curl-config --libs 2>/dev/null)
+ifeq ($(CURL_LIBS),)
+  CURL_LIBS := -lcurl
+endif
+
 CFLAGS_BASE := -std=c11 -Wall -Wextra -Werror -pedantic \
                -Wshadow -Wconversion -Wstrict-prototypes \
-               -D_POSIX_C_SOURCE=200809L -Iinclude -MMD -MP
-LDLIBS_BASE := -lpthread
+               -D_POSIX_C_SOURCE=200809L -Iinclude -Ivendor \
+               $(CURL_CFLAGS) -MMD -MP
+LDLIBS_BASE := -lpthread $(CURL_LIBS)
 
 ifeq ($(BUILD),debug)
   CFLAGS_PROFILE := -O0 -g3 -DIDX_BUILD_DEBUG
@@ -51,7 +58,15 @@ LDLIBS  := $(LDLIBS_BASE)
 
 SRCS     := $(wildcard src/*.c)
 OBJS     := $(patsubst src/%.c,$(OBJ_DIR)/%.o,$(SRCS))
-LIB_OBJS := $(filter-out $(OBJ_DIR)/main.o,$(OBJS))
+
+# Vendored third-party code is compiled with warnings off: it is not ours to
+# fix, and -Werror on someone else's source only breaks the build on upgrade.
+VENDOR_SRCS   := $(wildcard vendor/*/*.c)
+VENDOR_OBJS   := $(patsubst vendor/%.c,$(OBJ_DIR)/vendor/%.o,$(VENDOR_SRCS))
+CFLAGS_VENDOR := -std=c11 -Ivendor -w -MMD -MP \
+                 $(CFLAGS_PROFILE) $(SAN_FLAGS)
+
+LIB_OBJS := $(filter-out $(OBJ_DIR)/main.o,$(OBJS)) $(VENDOR_OBJS)
 
 TEST_SRCS := $(wildcard tests/test_*.c)
 TEST_BINS := $(patsubst tests/%.c,$(BUILD_DIR)/tests/%,$(TEST_SRCS))
@@ -68,13 +83,18 @@ debug:
 release:
 	@$(MAKE) --no-print-directory BUILD=release all
 
-$(BIN): $(OBJS) | $(BUILD_DIR)
+$(BIN): $(OBJS) $(VENDOR_OBJS) | $(BUILD_DIR)
 	$(ECHO) "  LD      $@"
 	$(Q)$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(OBJ_DIR)/%.o: src/%.c | $(OBJ_DIR)
 	$(ECHO) "  CC      $<"
 	$(Q)$(CC) $(CFLAGS) -c -o $@ $<
+
+$(OBJ_DIR)/vendor/%.o: vendor/%.c
+	$(ECHO) "  CC      $< (vendored)"
+	$(Q)mkdir -p $(dir $@)
+	$(Q)$(CC) $(CFLAGS_VENDOR) -c -o $@ $<
 
 $(BUILD_DIR)/tests/%: tests/%.c $(LIB_OBJS) | $(BUILD_DIR)/tests
 	$(ECHO) "  CCLD    $<"
@@ -99,4 +119,4 @@ clean:
 help:
 	@sed -n '1,14p' $(firstword $(MAKEFILE_LIST))
 
--include $(OBJS:.o=.d) $(TEST_BINS:=.d)
+-include $(OBJS:.o=.d) $(VENDOR_OBJS:.o=.d) $(TEST_BINS:=.d)
