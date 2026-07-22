@@ -92,6 +92,46 @@ Average 5.80 MiB, peak 7.39 MiB, arriving every 0.4–0.65 s. That is roughly
   plan this is the dominant cost, and it is the main argument for narrowing the
   subscription (see below).
 
+### Sizing, measured against a live endpoint
+
+A later run with the real client saw larger blocks than the first probe:
+9.2–11.0 MiB, arriving as ~1600 fragments of 16 KiB each. libcurl hands back
+about 16 KiB per `curl_ws_recv` call regardless of `CURLOPT_BUFFERSIZE`, so
+fragment count follows message size and reassembly is the normal path.
+
+Block size tracks chain activity and has no fixed ceiling, so the message cap
+is set at 64 MiB — far above anything observed. The cap exists to bound a
+runaway peer; sizing it snugly would kill working connections.
+
+Where the bytes are, in a 9.57 MiB block of 1719 transactions:
+
+| part | share |
+| --- | --- |
+| `meta` | 76% |
+| `transaction` | 23% |
+
+Within `meta`: `logMessages` 20%, pre/post token balances 35%,
+`loadedAddresses` 7%, `innerInstructions` 5%. Neither `encoding=base64` (8.5%
+smaller) nor `transactionDetails=accounts` (9.4% smaller) touches any of it —
+there is no RPC option that excludes logs or balances.
+
+### Compression is unavailable on this path
+
+gzip shrinks a 12.21 MiB block to 0.93 MiB, a factor of 13, and libcurl
+applies it transparently over HTTP. It is **not** available over the
+WebSocket: libcurl does not implement `permessage-deflate`.
+
+That asymmetry is worth remembering. The HTTP recovery path must set
+`CURLOPT_ACCEPT_ENCODING`, where it is nearly free. If WebSocket ingress ever
+becomes the binding constraint, compression is the largest single lever
+available and would require either a client that negotiates the extension or a
+move to a binary transport (Geyser, already in the backlog).
+
+Throughput against a free, temporary endpoint fell short of the ~2.5 blocks/s
+the chain produces, by both transports. That endpoint is rate limited and is
+not representative; the project targets a paid provider, where this shape is
+known to work. The figures above are kept for sizing, not as a capacity claim.
+
 ### Scope: general purpose
 
 The indexer is general purpose, so it subscribes with `"all"` and

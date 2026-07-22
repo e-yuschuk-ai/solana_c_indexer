@@ -19,7 +19,16 @@ typedef enum {
     IDX_ERR_PARSE,
     IDX_ERR_NOT_FOUND,
     IDX_ERR_RANGE,
-    IDX_ERR_INTERNAL
+    IDX_ERR_INTERNAL,
+    /* Transport. IDX_ERR_TIMEOUT and IDX_ERR_CLOSED are expected outcomes on a
+     * long-lived connection, not failures: callers retry or reconnect. */
+    IDX_ERR_NETWORK,
+    IDX_ERR_TIMEOUT,
+    IDX_ERR_CLOSED,
+    /* The peer answered, but with an error of its own (a JSON-RPC error
+     * object, an HTTP status). Distinct from a transport failure because
+     * retrying rarely helps. */
+    IDX_ERR_REMOTE
 } idx_status;
 
 /* Stable, human-readable name for a status code. Never returns NULL. */

@@ -22,6 +22,14 @@ const char *idx_status_str(idx_status status) {
             return "value out of range";
         case IDX_ERR_INTERNAL:
             return "internal error";
+        case IDX_ERR_NETWORK:
+            return "network error";
+        case IDX_ERR_TIMEOUT:
+            return "timed out";
+        case IDX_ERR_CLOSED:
+            return "connection closed";
+        case IDX_ERR_REMOTE:
+            return "remote error";
     }
     return "unknown error";
 }

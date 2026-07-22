@@ -71,7 +71,12 @@ LIB_OBJS := $(filter-out $(OBJ_DIR)/main.o,$(OBJS)) $(VENDOR_OBJS)
 TEST_SRCS := $(wildcard tests/test_*.c)
 TEST_BINS := $(patsubst tests/%.c,$(BUILD_DIR)/tests/%,$(TEST_SRCS))
 
-.PHONY: all debug release test clean help
+# Diagnostic programs that talk to a live endpoint. Built by `make tools`, not
+# by `all`, and never run by `make test`.
+TOOL_SRCS := $(wildcard tools/*.c)
+TOOL_BINS := $(patsubst tools/%.c,$(BUILD_DIR)/%,$(TOOL_SRCS))
+
+.PHONY: all debug release test tools clean help
 
 # The empty recipe suppresses "Nothing to be done" when already up to date.
 all: $(BIN)
@@ -99,6 +104,13 @@ $(OBJ_DIR)/vendor/%.o: vendor/%.c
 $(BUILD_DIR)/tests/%: tests/%.c $(LIB_OBJS) | $(BUILD_DIR)/tests
 	$(ECHO) "  CCLD    $<"
 	$(Q)$(CC) $(CFLAGS) -Itests $(LDFLAGS) -o $@ $< $(LIB_OBJS) $(LDLIBS)
+
+tools: $(TOOL_BINS)
+	@:
+
+$(BUILD_DIR)/%: tools/%.c $(LIB_OBJS) | $(BUILD_DIR)
+	$(ECHO) "  CCLD    $<"
+	$(Q)$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJS) $(LDLIBS)
 
 test: $(TEST_BINS)
 	@failed=0; \
