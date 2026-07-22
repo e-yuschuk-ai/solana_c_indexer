@@ -41,15 +41,15 @@ WebSocket is the hot path (decision D1a); HTTP is the recovery path for
 everything the socket cannot replay.
 
 - [x] Vendor the JSON parser (decision D2) and wrap it behind `idx_json`
-- [ ] libcurl initialization, TLS verification and shared connection setup
-- [ ] WebSocket connection over `wss://` with TLS verification
-- [ ] Fragment reassembly into a growable buffer with a high-water mark,
-      sized for the measured 4–8 MiB notifications
-- [ ] JSON-RPC subscription envelope: subscribe, confirm id, notification demux
-- [ ] `blockSubscribe` / `blockUnsubscribe`, with the filter and
-      `transactionDetails` level taken from the configuration
-- [ ] Keepalive (ping/pong) and idle detection
-- [ ] Reconnect with exponential backoff and automatic resubscribe
+- [x] libcurl initialization, TLS verification and shared connection setup
+- [x] WebSocket connection over `wss://` with TLS verification
+- [x] Fragment reassembly into a growable buffer with a high-water mark,
+      sized for the measured 9–11 MiB notifications
+- [x] JSON-RPC subscription envelope: subscribe, confirm id, notification demux
+- [~] `blockSubscribe` works; `blockUnsubscribe` and wiring the filter and
+      `transactionDetails` level to the configuration are still pending
+- [x] Keepalive (ping/pong) and idle detection
+- [x] Reconnect with exponential backoff and automatic resubscribe
 - [ ] Record the last slot seen before a disconnect so the gap can be replayed
 - [ ] HTTP JSON-RPC client: request/response envelope, batching, request ids
 - [ ] Methods: `getSlot`, `getBlock`, `getBlocks`, `getBlockHeight`,
