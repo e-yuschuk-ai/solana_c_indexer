@@ -34,6 +34,9 @@ Rejected alternatives:
   even though curl does the framing.
 - Everything sits behind `idx_http` and `idx_ws`, so replacing libcurl later
   touches two modules rather than the pipeline.
+- Ubuntu's packaged libcurl is not built with WebSocket support, unlike Debian
+  trixie's. `requirements.sh` detects this and builds a fixed libcurl from
+  the upstream tarball into `/usr/local` as a fallback.
 
 **Revisit if** the WebSocket API proves unstable across curl releases, or if
 latency measurements show the pull-based receive loop is a bottleneck.

@@ -17,6 +17,12 @@
 #
 # Not installed here, deliberately: libpq-dev and a ClickHouse client. Storage
 # is milestone M7 and no code needs them yet (ROADMAP.md).
+#
+# Ubuntu's packaged libcurl (unlike Debian trixie's) is not built with
+# WebSocket support, and there is no apt package that provides it. When that
+# is what apt gives us, this script builds a fixed libcurl from the upstream
+# release tarball and installs it under /usr/local — see
+# build_curl_with_websockets() below.
 
 set -euo pipefail
 
@@ -56,6 +62,58 @@ readonly SUDO
 # Keep apt from prompting for configuration during the install.
 export DEBIAN_FRONTEND=noninteractive
 
+curl_config_has_wss() {
+    command -v curl-config >/dev/null 2>&1 && curl-config --protocols | grep -qw WSS
+}
+
+# Pinned to a release verified against curl's release-signing key
+# (fingerprint 27ED EAF2 2F3A BCEB 50DB 9A12 5CC9 08FD B71E 12C2, published at
+# https://curl.se/docs/verify.html). Bump both together when updating.
+readonly CURL_WS_VERSION="8.21.0"
+readonly CURL_WS_SHA256="d9b327997999045a24cda50f3983e69e51c516bd8be6ef9842fc7f99135e33bb"
+
+# Ubuntu ships libcurl without --enable-websockets compiled in (decision D1
+# needs wss for blockSubscribe), and apt has no alternative package for it.
+# Build one from source and install it to /usr/local, which both the linker
+# (ld.so.conf.d/libc.conf) and the shell's PATH already search ahead of the
+# system package, so nothing needs to be uninstalled or reconfigured.
+build_curl_with_websockets() {
+    info "libcurl has no wss support; building curl $CURL_WS_VERSION with websockets enabled"
+
+    # Headers curl's configure needs for TLS and compression that
+    # build-essential does not pull in.
+    $SUDO apt-get install -y libssl-dev zlib1g-dev
+
+    local workdir
+    workdir="$(mktemp -d)"
+
+    local tarball="$workdir/curl-$CURL_WS_VERSION.tar.gz"
+    curl -fSL -o "$tarball" \
+        "https://curl.se/download/curl-$CURL_WS_VERSION.tar.gz"
+    echo "$CURL_WS_SHA256  $tarball" | sha256sum -c - >/dev/null ||
+        fail "curl-$CURL_WS_VERSION.tar.gz did not match the pinned checksum"
+
+    tar -xzf "$tarball" -C "$workdir"
+    (
+        cd "$workdir/curl-$CURL_WS_VERSION"
+        # --without-libpsl: configure probes for it via the shared lib alone
+        # and errors out on hosts (this one included) that have libpsl5 but
+        # not libpsl-dev. The indexer talks to one fixed RPC endpoint, so the
+        # public-suffix-list cookie checks it would enable are moot anyway.
+        ./configure --prefix=/usr/local --with-openssl --enable-websockets \
+            --without-libpsl
+        make -j"$(nproc 2>/dev/null || echo 1)"
+        $SUDO make install
+    )
+    $SUDO ldconfig
+
+    # /usr/local/bin already precedes /usr/bin in PATH, but bash may have
+    # cached the system curl-config's location from the check just above.
+    hash -r
+
+    rm -rf "$workdir"
+}
+
 install_build_requirements() {
     info "refreshing the package lists"
     $SUDO apt-get update
@@ -90,6 +148,10 @@ install_build_requirements() {
     # that the installed libcurl has WebSocket support, and how you probe an
     # endpoint by hand.
     $SUDO apt-get install -y curl
+
+    if ! curl_config_has_wss; then
+        build_curl_with_websockets
+    fi
 
     # The debugger. Not needed to build either, but .vscode/launch.json drives
     # it, so a breakpoint does nothing without it.
@@ -140,10 +202,11 @@ check() {
         # support has to be compiled in, and the block subscription is useless
         # without it (decision D1a). Debian 13 ships curl 8.14 with wss;
         # older releases may not.
-        if curl-config --protocols | grep -qw WSS; then
+        if curl_config_has_wss; then
             ok "libcurl has wss"
         else
             bad "libcurl has no wss support: blockSubscribe cannot connect"
+            bad "  (Ubuntu ships it without wss; ./requirements.sh builds a fixed one)"
             failures=$((failures + 1))
         fi
     else
@@ -195,7 +258,7 @@ case "$COMMAND" in
         check
         ;;
     -h | --help | help)
-        sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         ;;
     *)
         fail "unknown command '$COMMAND'. Try: install, docker, check, help"
