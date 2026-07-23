@@ -1,0 +1,13 @@
+services:
+  indexer:
+    # Builds with UID/GID 1000 by default (see Dockerfile). On Linux hosts
+    # where that does not match your user, override once with:
+    #   docker compose build --build-arg UID=$(id -u) --build-arg GID=$(id -g)
+    build:
+      context: .
+    working_dir: /app
+    volumes:
+      - .:/app
+    # run.sh reads ./.env itself when the file is present (see README.md),
+    # so no env_file entry is needed here.
+    command: ["./run.sh"]

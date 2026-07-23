@@ -113,6 +113,28 @@ environment variables `run.sh` loads, and
 and `indexer.conf` are gitignored because endpoint URLs often embed an API
 token in the path.
 
+### Docker
+
+`Dockerfile` and `docker-compose.yml` provide the toolchain (GNU Make, a C11
+compiler, the ASan/UBSan runtimes, and a libcurl with WebSocket support) for
+running `build.sh` and `run.sh` without installing anything locally. The
+image carries only the toolchain; the repository is bind-mounted at
+`/app`, so edits and build output are shared with the host:
+
+```sh
+docker compose build                              # once, or after Dockerfile changes
+docker compose run --rm indexer ./build.sh test    # any build.sh command
+docker compose run --rm indexer ./run.sh            # or just: docker compose up
+```
+
+`run.sh` loads `.env` exactly as it does outside Docker, so `cp .env.example
+.env` first. On a Linux host where your UID/GID are not 1000, rebuild with
+`docker compose build --build-arg UID=$(id -u) --build-arg GID=$(id -g)` so
+files written into the bind-mounted repo are not owned by root.
+
+This image is a development convenience, distinct from the production
+deployment Dockerfile tracked as a M8 roadmap item.
+
 ## Layout
 
 ```
