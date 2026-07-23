@@ -8,6 +8,9 @@
 #                               docker-compose.yml dev environment
 #   ./requirements.sh check     verify what is installed, install nothing
 #
+# Debugging in VS Code needs gdb, which is installed here, plus the C/C++
+# extension — see .vscode/extensions.json.
+#
 # Everything else the project depends on is vendored: the JSON parser lives in
 # vendor/yyjson and needs no package. See docs/decisions.md for why each
 # dependency was chosen.
@@ -87,6 +90,10 @@ install_build_requirements() {
     # that the installed libcurl has WebSocket support, and how you probe an
     # endpoint by hand.
     $SUDO apt-get install -y curl
+
+    # The debugger. Not needed to build either, but .vscode/launch.json drives
+    # it, so a breakpoint does nothing without it.
+    $SUDO apt-get install -y gdb
 }
 
 install_docker() {
@@ -144,6 +151,14 @@ check() {
         failures=$((failures + 1))
     fi
 
+    if command -v gdb >/dev/null 2>&1; then
+        ok "gdb $(gdb --version | head -1 | grep -o '[0-9][0-9.]*' | head -1)"
+    else
+        # Nothing needs it to build; only the VS Code launch configurations do.
+        warn "gdb not installed; breakpoints in VS Code will not work"
+        warn "  (apt-get install gdb)"
+    fi
+
     # Mirrors what build.sh does before it decides to drop the sanitizers.
     local probe
     probe="$(mktemp -d)"
@@ -180,7 +195,7 @@ case "$COMMAND" in
         check
         ;;
     -h | --help | help)
-        sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         ;;
     *)
         fail "unknown command '$COMMAND'. Try: install, docker, check, help"

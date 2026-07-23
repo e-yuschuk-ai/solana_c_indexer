@@ -1,0 +1,109 @@
+{
+    // Debugging needs the C/C++ extension (ms-vscode.cpptools) and gdb.
+    // ./requirements.sh installs gdb; see .vscode/extensions.json for the rest.
+    //
+    // Both configurations run the debug build, which is compiled -O0 -g3 with
+    // AddressSanitizer and UndefinedBehaviorSanitizer. That combination works
+    // under gdb: breakpoints resolve, locals read correctly, and a sanitizer
+    // report aborts into the debugger at the point of the fault rather than
+    // after the fact (see ASAN_OPTIONS below).
+    "version": "0.2.0",
+    "configurations": [
+        {
+            // The indexer against the endpoints in .env.
+            //
+            // Note what a breakpoint costs here: gdb stops every thread, so
+            // the receive thread stops reading the socket too. Sit on a
+            // breakpoint for long enough and the provider drops the
+            // connection — the pipeline reconnects, but the slots in between
+            // become gaps. For unhurried work on the processing side, debug a
+            // unit test instead; there is no clock running there.
+            "name": "Indexer (live endpoint)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/debug/indexer",
+            "args": ["--log-level", "debug"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            // Requires .env to exist: cp .env.example .env and fill it in.
+            // The debugger reports a missing file plainly, so it is not a
+            // mystery when it happens.
+            "envFile": "${workspaceFolder}/.env",
+            "environment": [
+                {
+                    // abort_on_error turns a sanitizer report into a SIGABRT,
+                    // which is what makes gdb stop with the faulting frame
+                    // still on the stack.
+                    "name": "ASAN_OPTIONS",
+                    "value": "abort_on_error=1:detect_leaks=1:print_stacktrace=1"
+                },
+                {
+                    "name": "UBSAN_OPTIONS",
+                    "value": "print_stacktrace=1:halt_on_error=1"
+                }
+            ],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "miDebuggerPath": "/usr/bin/gdb",
+            "preLaunchTask": "build debug",
+            "setupCommands": [
+                {
+                    "description": "Render containers and strings readably",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                },
+                {
+                    // The pipeline starts one thread and libcurl may start
+                    // more; announcing each one buries the program's own
+                    // output.
+                    "description": "Quieten thread start and exit notices",
+                    "text": "set print thread-events off",
+                    "ignoreFailures": true
+                }
+            ]
+        },
+        {
+            // Debugs the test binary for the tests/test_*.c file open in the
+            // editor: open tests/test_ring.c, press F5, and this builds and
+            // runs build/debug/tests/test_ring under the debugger. Named after
+            // the open file rather than a hardcoded list, so adding a module
+            // needs no change here.
+            //
+            // With a file open that is not a test, the build fails naming the
+            // target it could not find, which is the same mistake told plainly.
+            "name": "Unit test (file in the editor)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/debug/tests/${fileBasenameNoExtension}",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "ASAN_OPTIONS",
+                    "value": "abort_on_error=1:detect_leaks=1:print_stacktrace=1"
+                },
+                {
+                    "name": "UBSAN_OPTIONS",
+                    "value": "print_stacktrace=1:halt_on_error=1"
+                }
+            ],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "miDebuggerPath": "/usr/bin/gdb",
+            "preLaunchTask": "build the open test",
+            "setupCommands": [
+                {
+                    "description": "Render containers and strings readably",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                },
+                {
+                    "description": "Quieten thread start and exit notices",
+                    "text": "set print thread-events off",
+                    "ignoreFailures": true
+                }
+            ]
+        }
+    ]
+}

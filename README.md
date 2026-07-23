@@ -7,11 +7,14 @@ and the current state, and [docs/decisions.md](docs/decisions.md) for the
 choices that shape it.
 
 Complete so far: the project foundation (M1), the core data structures (M2),
-and most of the transport (M3) — a WebSocket client that follows the chain tip
-through `blockSubscribe`, and an HTTP JSON-RPC client for everything the socket
-cannot replay. The ingestion pipeline that joins them is M4 and does not exist
-yet, so the `indexer` binary still only loads its configuration and exits; the
-transports are exercised through the tools described below.
+the transport (M3) — a WebSocket client that follows the chain tip through
+`blockSubscribe`, and an HTTP JSON-RPC client for everything the socket cannot
+replay — and most of the ingestion pipeline (M4). The `indexer` binary follows
+the tip for real: a receive thread and a processing thread with a bounded ring
+between them, a slot cursor that resumes after a restart, and a clean shutdown
+that drains what is queued. What it does with each block is still a stub that
+counts transactions, because decoding is M5. Fetching the gaps it notices is
+the rest of M4.
 
 ## Requirements
 
@@ -110,6 +113,7 @@ Settings are resolved from four sources, each overriding the previous one:
 | `start_slot` | `INDEXER_START_SLOT` | `--start-slot` | `0` (chain tip) |
 | `end_slot` | `INDEXER_END_SLOT` | `--end-slot` | `0` (follow) |
 | `concurrency` | `INDEXER_CONCURRENCY` | `--concurrency` | `4` |
+| `queue_depth` | `INDEXER_QUEUE_DEPTH` | `--queue-depth` | `8` |
 | `commitment` | `INDEXER_COMMITMENT` | `--commitment` | `confirmed` |
 | `tx_details` | `INDEXER_TX_DETAILS` | `--tx-details` | `full` |
 | `block_filter` | `INDEXER_BLOCK_FILTER` | `--block-filter` | `all` |
@@ -143,6 +147,33 @@ files written into the bind-mounted repo are not owned by root.
 
 This image is a development convenience, distinct from the production
 deployment Dockerfile tracked as a M8 roadmap item.
+
+## Debugging
+
+`.vscode/` carries working launch configurations for VS Code. They need gdb,
+which `requirements.sh` installs, and the C/C++ extension.
+
+| Configuration | What it runs |
+| --- | --- |
+| Indexer (live endpoint) | `build/debug/indexer`, endpoints from `.env` |
+| Unit test (file in the editor) | the test binary for the open `tests/test_*.c` |
+
+Both build first and run the debug binary, which is compiled `-O0 -g3` with
+AddressSanitizer and UndefinedBehaviorSanitizer. That combination is fine under
+gdb, and `ASAN_OPTIONS=abort_on_error=1` is set so a sanitizer report stops the
+debugger with the faulting frame still on the stack instead of after the fact.
+
+One thing to know before setting a breakpoint on the live configuration: gdb
+stops every thread, so the receive thread stops reading the socket too. Sit
+there long enough and the provider drops the connection — the pipeline
+reconnects, but the slots in between become gaps. For unhurried work on the
+processing side, debug a unit test; nothing is waiting on the other end.
+
+Outside the editor, gdb works directly:
+
+```sh
+gdb --args ./build/debug/indexer --log-level debug
+```
 
 ## Layout
 

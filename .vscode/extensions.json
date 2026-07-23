@@ -1,0 +1,5 @@
+{
+    // Without ms-vscode.cpptools there is no cppdbg debugger type, and the
+    // launch configurations fail with "configuration type not supported".
+    "recommendations": ["ms-vscode.cpptools"]
+}

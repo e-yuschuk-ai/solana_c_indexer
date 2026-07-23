@@ -1,0 +1,66 @@
+{
+    // Build tasks. These wrap build.sh and the Makefile rather than invoking
+    // the compiler, so the editor builds exactly what the shell does.
+    "version": "2.0.0",
+    "tasks": [
+        {
+            // Default build (Ctrl+Shift+B), and what the indexer launch
+            // configuration runs first.
+            "label": "build debug",
+            "type": "shell",
+            "command": "./build.sh",
+            "args": ["debug"],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                // Suppresses build.sh's "run it with ./run.sh" hint: the
+                // debugger is about to launch the binary itself.
+                "env": { "NO_RUN_HINT": "1" }
+            },
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": ["$gcc"],
+            "presentation": {
+                "reveal": "silent",
+                "revealProblems": "onProblem",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "build release",
+            "type": "shell",
+            "command": "./build.sh",
+            "args": ["release"],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": { "NO_RUN_HINT": "1" }
+            },
+            "group": "build",
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            // Builds and runs everything under the sanitizers.
+            "label": "run tests",
+            "type": "shell",
+            "command": "./build.sh",
+            "args": ["test"],
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": { "kind": "test", "isDefault": true },
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            // Builds only the test binary for the tests/test_*.c file in the
+            // active editor, which is what the unit test launch configuration
+            // debugs. Building one binary skips running the other fifteen.
+            "label": "build the open test",
+            "type": "shell",
+            "command": "make",
+            "args": [
+                "BUILD=debug",
+                "build/debug/tests/${fileBasenameNoExtension}"
+            ],
+            "options": { "cwd": "${workspaceFolder}" },
+            "problemMatcher": ["$gcc"],
+            "presentation": { "reveal": "silent", "clear": true }
+        }
+    ]
+}
