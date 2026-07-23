@@ -104,12 +104,13 @@ handling is a requirement rather than a refinement.
 
 ## M5 — Decoding
 
-- [ ] Block header decoding (slot, blockhash, parent, block time)
-- [ ] Transaction decoding: signatures, message header, account keys
-- [ ] Legacy and versioned (v0) message support
-- [ ] Address lookup table resolution
-- [ ] Instruction and inner-instruction decoding
+- [x] Block header decoding (slot, blockhash, parent, block time)
+- [x] Transaction decoding: signatures, message header, account keys
+- [x] Legacy and versioned (v0) message support
+- [x] Address lookup table resolution
+- [x] Instruction and inner-instruction decoding
 - [ ] Transaction metadata: status, fee, pre/post balances, token balances, logs
+      (status and fee done; balances, token balances and logs remain)
 - [ ] Built-in program instruction decoders (System, SPL Token, SPL Token-2022)
 
 ## M6 — Domain decoding
