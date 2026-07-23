@@ -287,6 +287,105 @@ static void test_defaults(void) {
     idx_ring_options_init(NULL); /* must not crash */
 }
 
+/*
+ * The recovery path's ring waits instead of dropping: a discarded recovered
+ * block would become a gap again and be refetched forever.
+ */
+typedef struct {
+    idx_ring *ring;
+    idx_slot count;
+    uint64_t published;
+} reliable_args;
+
+static void *produce_reliably(void *argument) {
+    reliable_args *args = (reliable_args *)argument;
+    for (idx_slot slot = 0; slot < args->count; slot++) {
+        if (idx_ring_publish(args->ring, &(idx_ring_entry){
+                                             .slot = slot,
+                                             .doc = document(slot),
+                                             .bytes = 1,
+                                         },
+                             NULL) != IDX_OK) {
+            break;
+        }
+        args->published++;
+    }
+    idx_ring_close(args->ring);
+    return NULL;
+}
+
+static void test_blocking_ring_drops_nothing(void) {
+    idx_ring_options options;
+    idx_ring_options_init(&options);
+    options.depth = 2;
+    options.block_when_full = true;
+
+    idx_ring *ring = NULL;
+    TEST_EQ_INT(idx_ring_new(&options, &ring, NULL), IDX_OK);
+
+    reliable_args args = {ring, 500, 0};
+    pthread_t producer;
+    TEST_EQ_INT(pthread_create(&producer, NULL, produce_reliably, &args), 0);
+
+    uint64_t consumed = 0;
+    idx_slot expected = 0;
+    for (;;) {
+        idx_ring_entry entry;
+        idx_status status = idx_ring_consume(ring, 500, &entry, NULL);
+        if (status == IDX_ERR_CLOSED) {
+            break;
+        }
+        if (status != IDX_OK) {
+            continue;
+        }
+        /* Every slot, in order, with no sequence gap anywhere. */
+        TEST_EQ_UINT(entry.slot, expected);
+        TEST_EQ_UINT(entry.seq, consumed);
+        expected++;
+        consumed++;
+        idx_ring_release(ring, &entry);
+    }
+    TEST_EQ_INT(pthread_join(producer, NULL), 0);
+
+    idx_ring_stats stats;
+    idx_ring_get_stats(ring, &stats);
+    TEST_EQ_UINT(stats.published, 500u);
+    TEST_EQ_UINT(stats.consumed, 500u);
+    TEST_EQ_UINT(stats.dropped, 0u);
+    TEST_EQ_UINT(consumed, 500u);
+
+    idx_ring_free(ring);
+}
+
+/* Closing while a producer waits for room must not wedge it. */
+static void test_blocking_ring_close_wakes_the_producer(void) {
+    idx_ring_options options;
+    idx_ring_options_init(&options);
+    options.depth = 2;
+    options.block_when_full = true;
+
+    idx_ring *ring = NULL;
+    TEST_EQ_INT(idx_ring_new(&options, &ring, NULL), IDX_OK);
+
+    reliable_args args = {ring, 100000, 0};
+    pthread_t producer;
+    TEST_EQ_INT(pthread_create(&producer, NULL, produce_reliably, &args), 0);
+
+    /* Take one so the producer is certainly running, then shut it down with
+     * the queue full and the producer waiting. */
+    idx_ring_entry entry;
+    while (idx_ring_consume(ring, 500, &entry, NULL) != IDX_OK) {
+        /* keep waiting for the first one */
+    }
+    idx_ring_release(ring, &entry);
+    idx_ring_close(ring);
+
+    TEST_EQ_INT(pthread_join(producer, NULL), 0);
+    TEST_ASSERT(args.published < 100000u);
+
+    idx_ring_free(ring);
+}
+
 /* ------------------------------------------------------------- concurrency -- */
 
 typedef struct {
@@ -374,5 +473,7 @@ TEST_MAIN({
     TEST_RUN(test_free_releases_queued_documents);
     TEST_RUN(test_rejects_bad_arguments);
     TEST_RUN(test_defaults);
+    TEST_RUN(test_blocking_ring_drops_nothing);
+    TEST_RUN(test_blocking_ring_close_wakes_the_producer);
     TEST_RUN(test_concurrent_producer_and_consumer);
 })

@@ -205,6 +205,7 @@ static void test_options_init(void) {
     TEST_EQ_INT(options.poll_timeout_ms, 1000);
     TEST_EQ_INT(options.save_interval_ms, 1000);
     TEST_ASSERT(options.allow_fallback);
+    TEST_ASSERT(options.recover_gaps);
 
     idx_pipeline_options_init(NULL); /* must not crash */
 }
@@ -298,6 +299,10 @@ static void test_open_and_close(void) {
     TEST_EQ_UINT(stats.queue_dropped, 0u);
     TEST_EQ_UINT(stats.queue_high_water, 0u);
     TEST_EQ_UINT(stats.queue_depth, IDX_RING_DEFAULT_DEPTH);
+    /* The gap set exists from open, and starts with nothing outstanding. */
+    TEST_EQ_UINT(stats.gap_slots_outstanding, 0u);
+    TEST_EQ_UINT(stats.gap_ranges, 0u);
+    TEST_EQ_UINT(stats.blocks_recovered, 0u);
     /* Where the cursor already was, not a fresh zero. */
     TEST_EQ_UINT(stats.last_indexed, 250000000u);
 

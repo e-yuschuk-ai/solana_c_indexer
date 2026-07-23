@@ -103,9 +103,17 @@ typedef struct {
     /* Try slotSubscribe + getBlock when blockSubscribe is unavailable. Needs
      * an RPC endpoint to be configured. */
     bool allow_fallback;
+
+    /*
+     * Recover the holes the socket leaves, and backfill from a resumed cursor
+     * or a configured start slot, over HTTP. Needs an RPC endpoint. Off leaves
+     * the gaps recorded and reported but unfilled, which is what a run wants
+     * when only the live path is under test.
+     */
+    bool recover_gaps;
 } idx_pipeline_options;
 
-/* Defaults: 1 s poll, 1 s save interval, fallback enabled. */
+/* Defaults: 1 s poll, 1 s save interval, fallback and gap recovery enabled. */
 void idx_pipeline_options_init(idx_pipeline_options *options);
 
 typedef struct {
@@ -125,6 +133,18 @@ typedef struct {
     uint64_t queue_dropped;
     size_t queue_high_water; /* deepest the ring has been */
     size_t queue_depth;      /* what the ring was sized for */
+
+    /* Recovery. `blocks_recovered` counts blocks committed from the HTTP path
+     * rather than the socket; `gap_slots_outstanding` is what is still missing
+     * right now, which is the number to watch. */
+    uint64_t blocks_recovered;
+    uint64_t gap_slots_outstanding;
+    uint64_t gap_slots_resolved;
+    uint64_t gap_slots_absent;   /* skipped by the chain, or no longer retained */
+    uint64_t gap_fetch_failures;
+    uint64_t gap_ranges_claimed;
+    uint64_t gap_ranges_abandoned;
+    size_t gap_ranges;
 
     idx_slot last_indexed;   /* IDX_SLOT_NONE until the first commit */
     bool used_fallback;

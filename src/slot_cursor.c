@@ -28,6 +28,13 @@ void idx_slot_cursor_record_indexed(idx_slot_cursor *cursor, idx_slot slot) {
     }
 }
 
+void idx_slot_cursor_set_indexed(idx_slot_cursor *cursor, idx_slot slot) {
+    if (cursor == NULL) {
+        return;
+    }
+    cursor->last_indexed = slot;
+}
+
 void idx_slot_cursor_observe(idx_slot_cursor *cursor, idx_slot slot) {
     if (cursor == NULL) {
         return;

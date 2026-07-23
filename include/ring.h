@@ -41,6 +41,15 @@ typedef struct {
      * costs a refetch rather than data. 0 selects IDX_RING_DEFAULT_DEPTH.
      */
     size_t depth;
+
+    /*
+     * Wait for room instead of dropping when full. Off for the live socket,
+     * which must never be made to wait (decision D6); on for the recovery
+     * path, where the producer is a fetcher and stalling it is free. A dropped
+     * recovered block would become a gap again and be refetched forever, so
+     * that path has to be reliable.
+     */
+    bool block_when_full;
 } idx_ring_options;
 
 void idx_ring_options_init(idx_ring_options *options);
@@ -96,13 +105,16 @@ idx_status idx_ring_new(const idx_ring_options *options, idx_ring **out,
 void idx_ring_free(idx_ring *ring);
 
 /*
- * Queues `entry`, taking ownership of its document. Never blocks on the
- * consumer: a full ring frees its oldest entry instead, which is counted in
- * `dropped` and shows up as a sequence gap on the other side.
+ * Queues `entry`, taking ownership of its document.
+ *
+ * By default this never blocks: a full ring frees its oldest entry instead,
+ * counted in `dropped` and visible on the other side as a sequence gap. With
+ * `block_when_full` it waits for the consumer instead, and drops nothing.
  *
  *   IDX_OK         queued; the ring owns the document from here
- *   IDX_ERR_CLOSED the ring is closed. The document is freed rather than
- *                  leaked, so the caller must not touch it either way
+ *   IDX_ERR_CLOSED the ring is closed, or was closed while waiting for room.
+ *                  The document is freed rather than leaked, so the caller
+ *                  must not touch it either way
  */
 idx_status idx_ring_publish(idx_ring *ring, const idx_ring_entry *entry,
                             idx_error *err);

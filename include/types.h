@@ -39,6 +39,12 @@ typedef struct {
 /* A slot number. Distinct from a block height, which is not the same thing. */
 typedef uint64_t idx_slot;
 
+/*
+ * Sentinel for "no slot". Slot 0 is genesis, a real slot, so it cannot double
+ * as the empty value; the maximum, which the chain will not reach, can.
+ */
+#define IDX_SLOT_NONE UINT64_MAX
+
 /* ---------------------------------------------------------------- pubkey -- */
 
 extern const idx_pubkey IDX_PUBKEY_DEFAULT; /* all zeros, the system program */

@@ -14,6 +14,7 @@ typedef idx_ring_entry idx_ring_desc;
 struct idx_ring {
     pthread_mutex_t lock;
     pthread_cond_t not_empty;
+    pthread_cond_t not_full; /* only waited on when block_when_full */
 
     idx_ring_desc *queue;
     size_t depth;
@@ -22,6 +23,7 @@ struct idx_ring {
 
     uint64_t next_seq;
     bool closed;
+    bool block_when_full;
 
     idx_ring_stats stats;
 };
@@ -31,6 +33,7 @@ void idx_ring_options_init(idx_ring_options *options) {
         return;
     }
     options->depth = IDX_RING_DEFAULT_DEPTH;
+    options->block_when_full = false;
 }
 
 /* Caller holds the lock. */
@@ -49,8 +52,12 @@ idx_status idx_ring_new(const idx_ring_options *options, idx_ring **out,
     }
 
     size_t depth = IDX_RING_DEFAULT_DEPTH;
-    if (options != NULL && options->depth != 0) {
-        depth = options->depth;
+    bool block_when_full = false;
+    if (options != NULL) {
+        if (options->depth != 0) {
+            depth = options->depth;
+        }
+        block_when_full = options->block_when_full;
     }
 
     /* A depth of one leaves the producer nothing to drop but the entry the
@@ -71,6 +78,7 @@ idx_status idx_ring_new(const idx_ring_options *options, idx_ring **out,
     }
     ring->depth = depth;
     ring->stats.depth = depth;
+    ring->block_when_full = block_when_full;
 
     pthread_mutex_init(&ring->lock, NULL);
 
@@ -80,6 +88,7 @@ idx_status idx_ring_new(const idx_ring_options *options, idx_ring **out,
     pthread_condattr_init(&attr);
     pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
     pthread_cond_init(&ring->not_empty, &attr);
+    pthread_cond_init(&ring->not_full, &attr);
     pthread_condattr_destroy(&attr);
 
     *out = ring;
@@ -94,6 +103,7 @@ void idx_ring_free(idx_ring *ring) {
         idx_json_free(ring->queue[ring->tail % ring->depth].doc);
         ring->tail++;
     }
+    pthread_cond_destroy(&ring->not_full);
     pthread_cond_destroy(&ring->not_empty);
     pthread_mutex_destroy(&ring->lock);
     free(ring->queue);
@@ -134,8 +144,20 @@ idx_status idx_ring_publish(idx_ring *ring, const idx_ring_entry *entry,
         return IDX_FAIL(err, IDX_ERR_CLOSED, "the ring is closed");
     }
 
-    if ((size_t)(ring->head - ring->tail) >= ring->depth) {
-        drop_oldest(ring);
+    while ((size_t)(ring->head - ring->tail) >= ring->depth) {
+        if (!ring->block_when_full) {
+            drop_oldest(ring);
+            break;
+        }
+        /* The recovery path: wait rather than lose a block that would only
+         * have to be fetched again. */
+        pthread_cond_wait(&ring->not_full, &ring->lock);
+        if (ring->closed) {
+            pthread_mutex_unlock(&ring->lock);
+            idx_json_free(entry->doc);
+            return IDX_FAIL(err, IDX_ERR_CLOSED,
+                            "the ring closed while waiting for room");
+        }
     }
 
     idx_ring_desc *desc = &ring->queue[ring->head % ring->depth];
@@ -201,6 +223,7 @@ idx_status idx_ring_consume(idx_ring *ring, int timeout_ms, idx_ring_entry *out,
     ring->stats.consumed++;
     note_queued(ring);
 
+    pthread_cond_signal(&ring->not_full);
     pthread_mutex_unlock(&ring->lock);
     return IDX_OK;
 }
@@ -221,6 +244,7 @@ void idx_ring_close(idx_ring *ring) {
     pthread_mutex_lock(&ring->lock);
     ring->closed = true;
     pthread_cond_broadcast(&ring->not_empty);
+    pthread_cond_broadcast(&ring->not_full);
     pthread_mutex_unlock(&ring->lock);
 }
 

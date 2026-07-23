@@ -6,10 +6,18 @@
  *
  * Two frontiers, tracked separately because they answer different questions:
  *
- *   last_indexed  the highest slot fully committed to storage. Durable —
- *                 idx_slot_cursor_save writes it and idx_slot_cursor_open
- *                 reloads it — so a restart resumes where indexing stopped
- *                 rather than at the tip.
+ *   last_indexed  the highest slot with nothing outstanding at or below it.
+ *                 Durable — idx_slot_cursor_save writes it and
+ *                 idx_slot_cursor_open reloads it — so a restart resumes where
+ *                 indexing stopped rather than at the tip.
+ *
+ *                 Note "nothing outstanding below", not "the highest one
+ *                 committed". Once gaps are being recovered in the background
+ *                 the two differ constantly: slot 500 can be committed while
+ *                 slot 100 is still being fetched, and resuming at 501 would
+ *                 skip it for good. The pipeline computes this frontier from
+ *                 the gap set (see idx_gaps_watermark) and assigns it with
+ *                 idx_slot_cursor_set_indexed.
  *   last_seen     the highest slot that reached the processing thread this
  *                 run. Kept in memory only; it is never reset on a reconnect,
  *                 which is what lets the range missed while the socket was
@@ -36,13 +44,6 @@
 #include "types.h"
 
 #define IDX_SLOT_CURSOR_PATH_MAX 512
-
-/*
- * Sentinel for "no slot recorded". Slot 0 is genesis, a real slot, so it
- * cannot double as the empty value; the maximum, which the chain will not
- * reach, can.
- */
-#define IDX_SLOT_NONE UINT64_MAX
 
 typedef struct {
     idx_slot last_indexed; /* durable; IDX_SLOT_NONE before anything is indexed */
@@ -100,6 +101,15 @@ idx_status idx_slot_cursor_save(const idx_slot_cursor *cursor, idx_error *err);
  * harmless. Does not persist — the caller controls save cadence.
  */
 void idx_slot_cursor_record_indexed(idx_slot_cursor *cursor, idx_slot slot);
+
+/*
+ * Sets last_indexed outright, including downwards, which is the difference
+ * that matters. A hole discovered below the current position lowers the
+ * frontier that can be trusted, and keeping the higher value would resume past
+ * slots that were never indexed. Moving back costs re-indexing, which is
+ * idempotent; refusing to would cost the slots. Does not persist.
+ */
+void idx_slot_cursor_set_indexed(idx_slot_cursor *cursor, idx_slot slot);
 
 /*
  * Advances last_seen to include `slot`. Monotonic. This is the record that,

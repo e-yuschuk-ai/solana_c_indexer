@@ -124,6 +124,21 @@ int main(int argc, char **argv) {
     IDX_INFO("queue: dropped=%llu high_water=%zu of %zu",
              (unsigned long long)stats.queue_dropped, stats.queue_high_water,
              stats.queue_depth);
+    IDX_INFO("gaps: claimed=%llu recovered=%llu absent=%llu resolved=%llu "
+             "failures=%llu abandoned=%llu",
+             (unsigned long long)stats.gap_ranges_claimed,
+             (unsigned long long)stats.blocks_recovered,
+             (unsigned long long)stats.gap_slots_absent,
+             (unsigned long long)stats.gap_slots_resolved,
+             (unsigned long long)stats.gap_fetch_failures,
+             (unsigned long long)stats.gap_ranges_abandoned);
+    if (stats.gap_slots_outstanding != 0) {
+        /* Still missing at exit, so the next run has to pick them up — which
+         * it will, because the cursor never advanced past them. */
+        IDX_WARN("gaps: %llu slots still outstanding in %zu ranges",
+                 (unsigned long long)stats.gap_slots_outstanding,
+                 stats.gap_ranges);
+    }
     if (stats.last_indexed != IDX_SLOT_NONE) {
         IDX_INFO("last indexed slot %llu",
                  (unsigned long long)stats.last_indexed);

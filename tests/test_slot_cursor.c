@@ -36,6 +36,33 @@ static void test_init(void) {
     TEST_EQ_STR(cursor.path, "");
 }
 
+/*
+ * The watermark can move backwards, and must: a hole found below the current
+ * position lowers what can be trusted, and keeping the higher value would
+ * resume past slots that were never indexed.
+ */
+static void test_set_indexed_moves_either_way(void) {
+    idx_slot_cursor cursor;
+    idx_slot_cursor_init(&cursor, 0);
+
+    idx_slot_cursor_set_indexed(&cursor, 500);
+    TEST_EQ_UINT(cursor.last_indexed, 500u);
+
+    idx_slot_cursor_set_indexed(&cursor, 99);
+    TEST_EQ_UINT(cursor.last_indexed, 99u);
+
+    /* Which is exactly where record_indexed would have refused to go. */
+    idx_slot_cursor_record_indexed(&cursor, 42);
+    TEST_EQ_UINT(cursor.last_indexed, 99u);
+
+    idx_slot_cursor_set_indexed(&cursor, IDX_SLOT_NONE);
+    TEST_EQ_UINT(cursor.last_indexed, IDX_SLOT_NONE);
+    /* And a fresh start reads as one again. */
+    TEST_EQ_UINT(idx_slot_cursor_resume_slot(&cursor), 0u);
+
+    idx_slot_cursor_set_indexed(NULL, 1); /* must not crash */
+}
+
 static void test_record_indexed_monotonic(void) {
     idx_slot_cursor cursor;
     idx_slot_cursor_init(&cursor, 0);
@@ -263,6 +290,7 @@ static void test_invalid_args(void) {
 
 TEST_MAIN({
     TEST_RUN(test_init);
+    TEST_RUN(test_set_indexed_moves_either_way);
     TEST_RUN(test_record_indexed_monotonic);
     TEST_RUN(test_observe_monotonic);
     TEST_RUN(test_resume_slot);

@@ -78,12 +78,26 @@ handling is a requirement rather than a refinement.
       (decision D6) — the ring drops its oldest entry and the sequence gap
       makes the loss visible; handing the range to the fetcher is the item
       below
-- [ ] Gap detection: any distance between the cursor and a notified slot is a
-      hole, whatever caused it
-- [ ] Gap and backfill fetching over HTTP with configurable concurrency
-- [ ] Backfill mode for historical ranges, sharing the gap fetch path
-- [ ] Handle skipped slots and blocks the endpoint no longer retains
-- [ ] Out-of-order arrival: commit in slot order, buffer what arrives early
+- [x] Gap detection: any distance between the cursor and a notified slot is a
+      hole, whatever caused it — a reconnect, a provider dropping a slow
+      consumer, or the ring shedding under pressure all read the same
+- [x] Gap and backfill fetching over HTTP with configurable concurrency —
+      `idx_fetcher` claims ranges from `idx_gaps`, one connection per worker.
+      Claims narrow themselves when a provider refuses the getBlocks width
+- [x] Backfill mode for historical ranges, sharing the gap fetch path — not a
+      mode: a resumed cursor puts its distance from the tip into the same gap
+      set, and the same fetchers work it
+- [x] Handle skipped slots and blocks the endpoint no longer retains — the
+      getBlocks enumeration resolves what the chain never produced without a
+      fetch each, and a not-found block resolves rather than retries
+- [~] Out-of-order arrival: commit in slot order, buffer what arrives early —
+      what is ordered is the durable cursor, not the handler. `idx_gaps`
+      tracks a contiguous watermark, so a restart never resumes past a slot
+      that was never indexed, while blocks commit in whatever order they
+      arrive. Buffering blocks until a hole ahead of them fills would mean
+      holding tens of megabytes each for as long as the gap lasts; the
+      watermark buys the same guarantee for a few slot numbers. If M7 turns
+      out to need arrival order too, this is where it goes
 - [x] Graceful shutdown on `SIGINT`/`SIGTERM`, draining in-flight work — the
       receive loop stops at a block boundary and unsubscribes, the processing
       thread drains what is queued, and the cursor is persisted last

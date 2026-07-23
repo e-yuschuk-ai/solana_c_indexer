@@ -6,6 +6,8 @@
 #include <string.h>
 #include <time.h>
 
+#include "fetcher.h"
+#include "gaps.h"
 #include "log.h"
 #include "pubsub.h"
 #include "ring.h"
@@ -30,6 +32,20 @@ struct idx_pipeline {
     /* The hand-off. The receive thread publishes, the processing thread
      * consumes; neither touches the other's state (decision D6). */
     idx_ring *ring;
+
+    /*
+     * The recovery side. Holes go into `gaps`, the fetchers turn them back
+     * into blocks, and those arrive on `recovered` — a blocking ring, because
+     * a dropped recovered block would become a gap again and be refetched
+     * forever.
+     */
+    idx_gaps *gaps;
+    idx_ring *recovered;
+    idx_fetcher_pool *fetchers;
+
+    /* The pool is stopped and freed before the caller reads its statistics,
+     * so the last reading is kept here rather than lost with it. */
+    idx_fetcher_stats fetcher_stats;
     pthread_t processor;
     bool processor_running;
 
@@ -64,7 +80,8 @@ struct idx_pipeline {
     idx_arena arena;
     double last_save;
     bool save_warned;
-    uint64_t next_seq; /* the ring sequence expected next */
+    uint64_t next_seq;         /* the live ring sequence expected next */
+    idx_slot highest_committed; /* IDX_SLOT_NONE until the first commit */
 };
 
 static double monotonic_seconds(void) {
@@ -175,19 +192,51 @@ static bool below_floor(const idx_pipeline *pipeline, idx_slot slot) {
 
 /* --------------------------------------------------- the processing thread -- */
 
-static void observe_slot(idx_pipeline *pipeline, idx_slot slot) {
+/*
+ * Records that a live slot reached the pipeline, and turns any distance from
+ * the last one into a hole for the fetchers.
+ *
+ * The cause does not matter here and deliberately is not distinguished: a
+ * reconnect the socket could not replay and a block the ring dropped under
+ * pressure both show up as the same discontinuity, and both are recovered the
+ * same way.
+ */
+static void observe_live_slot(idx_pipeline *pipeline, idx_slot slot) {
     idx_slot_cursor *cursor = pipeline->options.cursor;
     idx_slot previous = cursor->last_seen;
 
     if (previous != IDX_SLOT_NONE && slot > previous + 1) {
-        /* Counted so the hole is at least visible. Fetching it is the gap
-         * item in M4 and is not implemented yet. */
-        pipeline->stats.slots_missed += slot - previous - 1;
-        IDX_DEBUG("gap: slots %llu..%llu never reached the pipeline",
-                  (unsigned long long)(previous + 1),
-                  (unsigned long long)(slot - 1));
+        idx_slot from = previous + 1;
+        idx_slot to = slot - 1;
+        pipeline->stats.slots_missed += to - from + 1;
+
+        idx_error gap_err;
+        idx_error_clear(&gap_err);
+        if (idx_gaps_add(pipeline->gaps, from, to, &gap_err) != IDX_OK) {
+            /* Losing a hole means losing the slots in it, so this is louder
+             * than the miss itself. */
+            IDX_ERROR("cannot record the gap %llu..%llu: %s",
+                      (unsigned long long)from, (unsigned long long)to,
+                      gap_err.message);
+        } else {
+            IDX_DEBUG("gap: slots %llu..%llu queued for recovery",
+                      (unsigned long long)from, (unsigned long long)to);
+        }
     }
     idx_slot_cursor_observe(cursor, slot);
+}
+
+/*
+ * Moves the durable frontier to wherever there is nothing outstanding beneath
+ * it. Assigned rather than advanced: a hole found below the current position
+ * has to pull it back, or a restart resumes past slots that were never
+ * indexed.
+ */
+static void update_watermark(idx_pipeline *pipeline) {
+    idx_slot watermark =
+        idx_gaps_watermark(pipeline->gaps, pipeline->highest_committed);
+    idx_slot_cursor_set_indexed(pipeline->options.cursor, watermark);
+    pipeline->stats.last_indexed = watermark;
 }
 
 static void save_cursor(idx_pipeline *pipeline, bool force) {
@@ -240,8 +289,19 @@ static idx_status commit_block(idx_pipeline *pipeline,
     }
 
     pipeline->stats.blocks++;
-    idx_slot_cursor_record_indexed(pipeline->options.cursor, block->slot);
-    pipeline->stats.last_indexed = pipeline->options.cursor->last_indexed;
+    if (pipeline->highest_committed == IDX_SLOT_NONE ||
+        block->slot > pipeline->highest_committed) {
+        pipeline->highest_committed = block->slot;
+    }
+
+    /*
+     * Resolved here rather than by the fetcher that produced it: the slot stops
+     * being outstanding when it is committed, not when it is fetched, so a
+     * crash in between costs a refetch instead of the block.
+     */
+    idx_gaps_resolve(pipeline->gaps, block->slot, block->slot);
+    update_watermark(pipeline);
+
     save_cursor(pipeline, false);
     return IDX_OK;
 }
@@ -250,54 +310,99 @@ static idx_status commit_block(idx_pipeline *pipeline,
  * The other half of the pipeline. Owns the slot cursor and the arena, and
  * never touches the socket; everything it sees arrived through the ring.
  */
+/* Commits one entry, whichever side it arrived from. */
+static idx_status handle_entry(idx_pipeline *pipeline, idx_ring_entry *entry,
+                               idx_ring *from, idx_block_origin origin) {
+    idx_raw_block block;
+    block.slot = entry->slot;
+    block.value = entry->value;
+    block.bytes = entry->bytes;
+    block.origin = origin;
+    block.arena = &pipeline->arena;
+
+    idx_status status = commit_block(pipeline, &block, &pipeline->processor_err);
+    idx_ring_release(from, entry);
+    return status;
+}
+
+/*
+ * The other half of the pipeline. Owns the slot cursor and the arena, and
+ * never touches the socket; everything it sees arrived through a ring.
+ *
+ * It drains two of them. The live ring carries the tip and drives gap
+ * detection, so it is polled first and its slots set the frontier. The
+ * recovery ring carries blocks the fetchers went back for; those are below the
+ * frontier by definition and must not be mistaken for the stream jumping
+ * backwards, so they only commit and resolve.
+ */
 static void *run_processor(void *argument) {
     idx_pipeline *pipeline = (idx_pipeline *)argument;
     idx_status status = IDX_OK;
 
-    for (;;) {
+    bool live_done = false;
+    bool recovery_done = false;
+
+    while (!live_done || !recovery_done) {
         idx_ring_entry entry;
-        idx_status code = idx_ring_consume(pipeline->ring, 200, &entry, NULL);
 
-        if (code == IDX_ERR_CLOSED) {
-            break; /* the receive thread stopped and the ring is drained */
+        if (!live_done) {
+            /* A short wait rather than a long one, because the recovery ring
+             * is checked in the same pass and neither should sit behind the
+             * other's timeout. */
+            idx_status code = idx_ring_consume(pipeline->ring, 50, &entry, NULL);
+            if (code == IDX_ERR_CLOSED) {
+                live_done = true;
+            } else if (code == IDX_OK) {
+                /*
+                 * The sequence is dense at the producer, so a jump is the ring
+                 * having dropped entries under pressure. What those slots were
+                 * is not recorded anywhere — but the slot discontinuity says
+                 * it just as well, and observe_live_slot turns it into a gap.
+                 */
+                if (entry.seq != pipeline->next_seq) {
+                    pipeline->stats.queue_dropped +=
+                        entry.seq - pipeline->next_seq;
+                }
+                pipeline->next_seq = entry.seq + 1;
+
+                observe_live_slot(pipeline, entry.slot);
+                status = handle_entry(pipeline, &entry, pipeline->ring,
+                                      IDX_BLOCK_FROM_SUBSCRIPTION);
+                if (status != IDX_OK) {
+                    break;
+                }
+                continue;
+            }
         }
-        if (code != IDX_OK) {
-            continue; /* timeout: nothing queued */
-        }
 
-        /*
-         * The sequence is dense at the producer, so any jump is the ring
-         * having dropped entries under pressure. The slots themselves are the
-         * gap; observe_slot below reports it from the discontinuity.
-         */
-        if (entry.seq != pipeline->next_seq) {
-            pipeline->stats.queue_dropped += entry.seq - pipeline->next_seq;
-        }
-        pipeline->next_seq = entry.seq + 1;
-
-        observe_slot(pipeline, entry.slot);
-
-        idx_raw_block block;
-        block.slot = entry.slot;
-        block.value = entry.value;
-        block.bytes = entry.bytes;
-        block.origin = (idx_block_origin)entry.tag;
-        block.arena = &pipeline->arena;
-
-        status = commit_block(pipeline, &block, &pipeline->processor_err);
-        idx_ring_release(pipeline->ring, &entry);
-
-        if (status != IDX_OK) {
-            break;
+        if (!recovery_done) {
+            /* Once the tip is done this is the only source left, so it is
+             * worth waiting on properly. */
+            int timeout = live_done ? 200 : 0;
+            idx_status code =
+                idx_ring_consume(pipeline->recovered, timeout, &entry, NULL);
+            if (code == IDX_ERR_CLOSED) {
+                recovery_done = true;
+            } else if (code == IDX_OK) {
+                pipeline->stats.blocks_recovered++;
+                status = handle_entry(pipeline, &entry, pipeline->recovered,
+                                      IDX_BLOCK_FROM_RPC);
+                if (status != IDX_OK) {
+                    break;
+                }
+            }
         }
     }
 
     if (status != IDX_OK) {
         pipeline->processor_status = status;
         /* Tell the receive loop before it publishes anything else, and make
-         * its next publish fail rather than pile up work nobody will take. */
+         * the next publish on either side fail rather than pile up work
+         * nobody will take. A fetcher waiting for room is released by this
+         * too, which is what keeps the shutdown from wedging. */
         pipeline->processor_failed = 1;
         idx_ring_close(pipeline->ring);
+        idx_ring_close(pipeline->recovered);
     }
 
     /* The cursor is this thread's, so this is the only place it can be
@@ -595,6 +700,7 @@ void idx_pipeline_options_init(idx_pipeline_options *options) {
     options->poll_timeout_ms = IDX_PIPELINE_POLL_TIMEOUT_MS;
     options->save_interval_ms = IDX_PIPELINE_SAVE_INTERVAL_MS;
     options->allow_fallback = true;
+    options->recover_gaps = true;
 }
 
 idx_status idx_pipeline_open(const idx_pipeline_options *options,
@@ -646,8 +752,35 @@ idx_status idx_pipeline_open(const idx_pipeline_options *options,
         return status;
     }
 
+    /*
+     * The recovery ring blocks instead of dropping. Losing a recovered block
+     * would put its slot straight back into the gap set to be fetched again,
+     * and stalling a fetcher costs nothing — unlike stalling the socket
+     * (decision D6). It is kept shallow because the fetchers are the ones
+     * waiting on it.
+     */
+    idx_ring_options recovery_options;
+    idx_ring_options_init(&recovery_options);
+    recovery_options.depth = 4;
+    recovery_options.block_when_full = true;
+    status = idx_ring_new(&recovery_options, &pipeline->recovered, err);
+    if (status != IDX_OK) {
+        idx_ring_free(pipeline->ring);
+        free(pipeline);
+        return status;
+    }
+
+    status = idx_gaps_new(0, &pipeline->gaps, err);
+    if (status != IDX_OK) {
+        idx_ring_free(pipeline->recovered);
+        idx_ring_free(pipeline->ring);
+        free(pipeline);
+        return status;
+    }
+
     idx_arena_init(&pipeline->arena, IDX_ARENA_DEFAULT_CHUNK_SIZE);
     pipeline->stats.last_indexed = options->cursor->last_indexed;
+    pipeline->highest_committed = options->cursor->last_indexed;
 
     *out = pipeline;
     return IDX_OK;
@@ -657,7 +790,10 @@ void idx_pipeline_close(idx_pipeline *pipeline) {
     if (pipeline == NULL) {
         return;
     }
+    idx_fetcher_pool_stop(pipeline->fetchers);
+    idx_ring_free(pipeline->recovered);
     idx_ring_free(pipeline->ring);
+    idx_gaps_free(pipeline->gaps);
     idx_arena_destroy(&pipeline->arena);
     free(pipeline);
 }
@@ -681,6 +817,110 @@ void idx_pipeline_get_stats(const idx_pipeline *pipeline,
     out->queue_dropped = ring.dropped;
     out->queue_high_water = ring.high_water;
     out->queue_depth = ring.depth;
+
+    idx_gaps_stats gaps;
+    memset(&gaps, 0, sizeof(gaps));
+    idx_gaps_get_stats(pipeline->gaps, &gaps);
+    out->gap_slots_outstanding = gaps.slot_count;
+    out->gap_slots_resolved = gaps.resolved;
+    out->gap_ranges = gaps.range_count;
+
+    idx_fetcher_stats fetchers = pipeline->fetcher_stats;
+    if (pipeline->fetchers != NULL) {
+        idx_fetcher_pool_get_stats(pipeline->fetchers, &fetchers);
+    }
+    out->gap_slots_absent = fetchers.slots_absent;
+    out->gap_fetch_failures = fetchers.fetch_failures;
+    out->gap_ranges_abandoned = fetchers.ranges_abandoned;
+    out->gap_ranges_claimed = fetchers.ranges_claimed;
+}
+
+/*
+ * Everything between a resumed cursor and the current tip is a hole like any
+ * other, so backfill is not a separate mode: the range goes into the gap set
+ * and the same fetchers work it.
+ */
+static void queue_backfill(idx_pipeline *pipeline) {
+    const idx_config *cfg = pipeline->options.config;
+
+    if (!pipeline->options.recover_gaps || cfg->rpc_url[0] == '\0') {
+        IDX_WARN("slots from %llu to the tip will not be backfilled: "
+                 "gap recovery is off",
+                 (unsigned long long)pipeline->floor);
+        return;
+    }
+
+    const char *urls[1] = {cfg->rpc_url};
+    idx_rpc_options rpc_options;
+    idx_rpc_options_init(&rpc_options);
+    rpc_options.urls = urls;
+    rpc_options.url_count = 1;
+
+    idx_rpc *rpc = NULL;
+    idx_error err;
+    idx_error_clear(&err);
+    if (idx_rpc_open(&rpc_options, &rpc, &err) != IDX_OK) {
+        IDX_WARN("cannot size the backfill: %s", err.message);
+        return;
+    }
+
+    uint64_t tip = 0;
+    idx_status status = idx_rpc_get_slot(rpc, cfg->commitment, &tip, &err);
+    idx_rpc_close(rpc);
+
+    if (status != IDX_OK) {
+        IDX_WARN("cannot size the backfill: %s", err.message);
+        return;
+    }
+    if (tip == 0 || tip <= pipeline->floor) {
+        return; /* already at or ahead of the tip; nothing behind us */
+    }
+
+    /* The tip itself arrives on the socket, so the hole stops one short of
+     * it, and never runs past a configured end slot. */
+    idx_slot to = tip - 1;
+    if (cfg->end_slot != 0 && to > cfg->end_slot) {
+        to = cfg->end_slot;
+    }
+    if (to < pipeline->floor) {
+        return;
+    }
+
+    if (idx_gaps_add(pipeline->gaps, pipeline->floor, to, &err) != IDX_OK) {
+        IDX_ERROR("cannot queue the backfill: %s", err.message);
+        return;
+    }
+    IDX_INFO("backfilling %llu..%llu (%llu slots) while following the tip",
+             (unsigned long long)pipeline->floor, (unsigned long long)to,
+             (unsigned long long)(to - pipeline->floor + 1));
+}
+
+static void start_fetchers(idx_pipeline *pipeline) {
+    const idx_config *cfg = pipeline->options.config;
+
+    if (!pipeline->options.recover_gaps) {
+        IDX_WARN("gap recovery is off; holes will be recorded but not filled");
+        return;
+    }
+    if (cfg->rpc_url[0] == '\0') {
+        IDX_WARN("no rpc endpoint; holes will be recorded but not filled");
+        return;
+    }
+
+    idx_fetcher_options options;
+    idx_fetcher_options_init(&options);
+    options.config = cfg;
+    options.gaps = pipeline->gaps;
+    options.output = pipeline->recovered;
+
+    idx_error err;
+    idx_error_clear(&err);
+    if (idx_fetcher_pool_start(&options, &pipeline->fetchers, &err) != IDX_OK) {
+        /* Degraded rather than fatal: the live path still works, and the gaps
+         * stay recorded for a run that can fetch them. */
+        IDX_WARN("cannot start the gap fetchers: %s", err.message);
+        pipeline->fetchers = NULL;
+    }
 }
 
 idx_status idx_pipeline_run(idx_pipeline *pipeline, idx_error *err) {
@@ -695,17 +935,11 @@ idx_status idx_pipeline_run(idx_pipeline *pipeline, idx_error *err) {
         IDX_INFO("following from the current tip");
     } else {
         IDX_INFO("resuming at slot %llu", (unsigned long long)pipeline->floor);
-        /*
-         * Whatever sits between the floor and the tip is a hole that follow
-         * mode alone does not close, because the socket only carries what
-         * happens next. The backfill item in M4 is what closes it.
-         */
-        IDX_WARN("slots between %llu and the tip are not backfilled yet "
-                 "(ROADMAP.md milestone M4)",
-                 (unsigned long long)pipeline->floor);
+        queue_backfill(pipeline);
     }
 
     IDX_TRY(start_processor(pipeline, err));
+    start_fetchers(pipeline);
 
     idx_status status = run_subscription(pipeline, err);
 
@@ -718,9 +952,21 @@ idx_status idx_pipeline_run(idx_pipeline *pipeline, idx_error *err) {
         status = run_fallback(pipeline, err);
     }
 
-    /* Stop feeding, then let the far side finish what is already queued. It
-     * persists the cursor on its way out. */
+    /*
+     * Shutdown order matters. The live ring closes first so nothing new is
+     * fed. The fetchers stop next, while the processing thread is still
+     * draining — a worker blocked on a full recovery ring needs a consumer to
+     * make room for it, and stopping them the other way round would wedge.
+     * Only then does the recovery ring close, which is what tells the
+     * processing thread there is nothing left.
+     */
     idx_ring_close(pipeline->ring);
+
+    idx_fetcher_pool_get_stats(pipeline->fetchers, &pipeline->fetcher_stats);
+    idx_fetcher_pool_stop(pipeline->fetchers);
+    pipeline->fetchers = NULL;
+
+    idx_ring_close(pipeline->recovered);
     pthread_join(pipeline->processor, NULL);
     pipeline->processor_running = false;
 
