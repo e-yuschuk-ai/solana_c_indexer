@@ -90,6 +90,13 @@ static double monotonic_seconds(void) {
     return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
 }
 
+static void sleep_ms(int milliseconds) {
+    struct timespec request;
+    request.tv_sec = milliseconds / 1000;
+    request.tv_nsec = (long)(milliseconds % 1000) * 1000000L;
+    nanosleep(&request, NULL);
+}
+
 const char *idx_block_origin_name(idx_block_origin origin) {
     switch (origin) {
     case IDX_BLOCK_FROM_SUBSCRIPTION:
@@ -935,6 +942,47 @@ static void start_fetchers(idx_pipeline *pipeline) {
     }
 }
 
+/*
+ * Following the tip and recovering gaps finish independently: the live loop
+ * returns the moment the tip reaches --end-slot, but the backfill it queued is
+ * still being fetched. A bounded run's whole job is that backfill, so once
+ * following is done cleanly, wait for the fetchers to drain the gap set before
+ * the caller stops them — otherwise the range is abandoned half-fetched.
+ *
+ * The fetchers bound this themselves: a range that cannot be fetched is either
+ * resolved as absent or abandoned after retries, so the set always empties. A
+ * stop request (SIGINT, or a failed handler) still breaks out at once, leaving
+ * the rest to the next run, which the cursor guarantees it will pick up.
+ */
+static void drain_recovery(idx_pipeline *pipeline) {
+    if (pipeline->fetchers == NULL || idx_gaps_is_empty(pipeline->gaps)) {
+        return;
+    }
+
+    idx_gaps_stats start;
+    idx_gaps_get_stats(pipeline->gaps, &start);
+    IDX_INFO("draining %llu backfill slots still outstanding",
+             (unsigned long long)start.slot_count);
+
+    double last_report = monotonic_seconds();
+    while (!stop_requested(pipeline) && !idx_gaps_is_empty(pipeline->gaps)) {
+        sleep_ms(100);
+
+        double now = monotonic_seconds();
+        if (now - last_report >= 5.0) {
+            idx_gaps_stats current;
+            idx_gaps_get_stats(pipeline->gaps, &current);
+            IDX_INFO("draining: %llu backfill slots left",
+                     (unsigned long long)current.slot_count);
+            last_report = now;
+        }
+    }
+
+    if (idx_gaps_is_empty(pipeline->gaps)) {
+        IDX_INFO("backfill drained");
+    }
+}
+
 idx_status idx_pipeline_run(idx_pipeline *pipeline, idx_error *err) {
     if (pipeline == NULL) {
         return IDX_FAIL(err, IDX_ERR_INVALID_ARG, "null pipeline");
@@ -968,6 +1016,15 @@ idx_status idx_pipeline_run(idx_pipeline *pipeline, idx_error *err) {
         }
         idx_error_clear(err);
         status = run_fallback(pipeline, err);
+    }
+
+    /*
+     * Following ended. If it ended because the tip reached --end-slot (a clean
+     * return, no stop pending), the backfill it queued may still be in flight;
+     * let the fetchers finish it before they are stopped below.
+     */
+    if (status == IDX_OK && !stop_requested(pipeline)) {
+        drain_recovery(pipeline);
     }
 
     /*
