@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include "block.h"
 #include "config.h"
 #include "error.h"
 #include "log.h"
@@ -29,21 +30,44 @@ static double monotonic_seconds(void) {
 }
 
 /*
- * Consumer stub. Decoding a block into transactions is M5 and storing them is
- * M7; until then the handler proves the block arrived intact and readable, and
- * accepting it is what advances the cursor.
+ * Consumer stub. Storing decoded transactions is M7; until then the handler
+ * decodes the block (M5) and tallies what it found, which both proves the
+ * decoder against live data and is what advances the cursor. A decode failure
+ * stops the pipeline, leaving the cursor on the offending slot — the strict
+ * choice that surfaces bugs while the decoder is being built out.
  */
 static idx_status count_block(const idx_raw_block *block, void *user,
                               idx_error *err) {
-    (void)err;
     uint64_t *transactions = (uint64_t *)user;
 
-    size_t count = idx_json_array_size(idx_json_get(block->value,
-                                                    "transactions"));
-    *transactions += count;
+    idx_block decoded;
+    idx_status status =
+        idx_block_decode(block->value, block->slot, block->arena, &decoded, err);
+    if (status != IDX_OK) {
+        IDX_WARN("slot %llu: decode failed: %s",
+                 (unsigned long long)block->slot,
+                 (err != NULL) ? err->message : "");
+        return status;
+    }
+    *transactions += decoded.transaction_count;
 
-    IDX_DEBUG("slot %llu: %zu transactions, %.2f MiB from %s",
-              (unsigned long long)block->slot, count,
+    size_t instructions = 0;
+    size_t inner = 0;
+    size_t versioned = 0;
+    for (size_t i = 0; i < decoded.transaction_count; i++) {
+        const idx_transaction *tx = &decoded.transactions[i];
+        instructions += tx->instruction_count;
+        for (size_t j = 0; j < tx->inner_instruction_count; j++) {
+            inner += tx->inner_instructions[j].instruction_count;
+        }
+        if (tx->version != IDX_TX_VERSION_LEGACY) {
+            versioned++;
+        }
+    }
+
+    IDX_DEBUG("slot %llu: %zu txns (%zu v0), %zu ix, %zu inner, %.2f MiB from %s",
+              (unsigned long long)block->slot, decoded.transaction_count,
+              versioned, instructions, inner,
               (double)block->bytes / (1024.0 * 1024.0),
               idx_block_origin_name(block->origin));
     return IDX_OK;
