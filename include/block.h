@@ -71,6 +71,25 @@ typedef struct {
     size_t instruction_count;
 } idx_inner_instructions;
 
+/*
+ * One entry from meta.pre/postTokenBalances. These are sparse — only accounts
+ * that carry a token balance appear — so `account_index` points back into the
+ * transaction's resolved account list. `amount` is the raw integer amount from
+ * uiTokenAmount.amount (a decimal string in the wire form) and `decimals` its
+ * scale; the human-readable uiAmount is derived and not kept. `owner` and
+ * `program_id` are present in recent history but not older blocks.
+ */
+typedef struct {
+    uint8_t account_index;
+    idx_pubkey mint;
+    idx_pubkey owner;      /* valid only when has_owner */
+    idx_pubkey program_id; /* the token program; valid only when has_program_id */
+    bool has_owner;
+    bool has_program_id;
+    uint64_t amount;
+    uint8_t decimals;
+} idx_token_balance;
+
 typedef struct {
     idx_tx_version version;
 
@@ -99,11 +118,31 @@ typedef struct {
     size_t inner_instruction_count;
 
     /*
-     * Minimal metadata, carried because it is cheap and structural. The rest of
-     * meta — balances, token balances, logs — is a later M5 item.
+     * Metadata from `meta`. Present only when the block was fetched with full
+     * transaction detail; without it every count below is zero and the
+     * pointers are NULL.
      */
     bool success; /* meta.err was null */
     uint64_t fee;
+
+    /*
+     * Lamport balances before and after, one per resolved account and in the
+     * same order, so balance_count == account_count when present. Both arrays
+     * are present together or not at all.
+     */
+    const uint64_t *pre_balances;
+    const uint64_t *post_balances;
+    size_t balance_count;
+
+    /* Token balances before and after — sparse, indexed by account_index. */
+    const idx_token_balance *pre_token_balances;
+    size_t pre_token_balance_count;
+    const idx_token_balance *post_token_balances;
+    size_t post_token_balance_count;
+
+    /* Program log lines (meta.logMessages), each borrowing the document. */
+    const idx_slice *logs;
+    size_t log_count;
 } idx_transaction;
 
 typedef struct {

@@ -48,6 +48,43 @@ static idx_status read_hash_field(idx_json_val object, const char *key,
     return idx_hash_from_base58((const char *)text.data, text.len, out, err);
 }
 
+/* Reads a base58 pubkey string field. */
+static idx_status read_pubkey_field(idx_json_val object, const char *key,
+                                    idx_pubkey *out, idx_error *err) {
+    idx_slice text;
+    IDX_TRY(idx_json_read_string(object, key, &text, err));
+    return idx_pubkey_from_base58((const char *)text.data, text.len, out, err);
+}
+
+/*
+ * Parses a decimal integer string into a u64. Token amounts arrive as strings
+ * because they can reach the top of the u64 range, which a JSON number is not
+ * guaranteed to carry exactly. Digits only — no sign, space or prefix — and an
+ * overflow is a parse error rather than a silent wrap.
+ */
+static idx_status parse_u64_decimal(idx_slice text, uint64_t *out,
+                                    idx_error *err) {
+    if (text.len == 0) {
+        return IDX_FAIL(err, IDX_ERR_PARSE, "empty numeric string");
+    }
+    uint64_t value = 0;
+    for (size_t i = 0; i < text.len; i++) {
+        char c = (char)text.data[i];
+        if (c < '0' || c > '9') {
+            return IDX_FAIL(err, IDX_ERR_PARSE,
+                            "non-digit '%c' in numeric string", c);
+        }
+        uint64_t digit = (uint64_t)(c - '0');
+        if (value > (UINT64_MAX - digit) / 10) {
+            return IDX_FAIL(err, IDX_ERR_PARSE,
+                            "numeric string overflows a 64-bit integer");
+        }
+        value = value * 10 + digit;
+    }
+    *out = value;
+    return IDX_OK;
+}
+
 /*
  * Builds the resolved account list: the static message keys, then the loaded
  * writable addresses, then the loaded readonly ones (decision D7). The header
@@ -322,7 +359,7 @@ static idx_status decode_signatures(idx_json_val transaction, idx_arena *arena,
 }
 
 /* Pulls the small, structural part of meta: whether the transaction succeeded
- * and the fee it paid. The rest of meta is a later item. */
+ * and the fee it paid. */
 static idx_status decode_meta_summary(idx_json_val meta, idx_transaction *tx,
                                       idx_error *err) {
     tx->success = true;
@@ -334,6 +371,172 @@ static idx_status decode_meta_summary(idx_json_val meta, idx_transaction *tx,
     tx->success = !idx_json_is_present(error) || idx_json_is_null(error);
     (void)idx_json_opt_u64(meta, "fee", &tx->fee);
     (void)err;
+    return IDX_OK;
+}
+
+/*
+ * Reads meta.pre/postBalances: two parallel lamport arrays, one entry per
+ * resolved account. They come as a pair, so either both are decoded or neither
+ * is; a length that disagrees with the account list is malformed.
+ */
+static idx_status decode_balances(idx_json_val meta, idx_arena *arena,
+                                  idx_transaction *tx, idx_error *err) {
+    tx->pre_balances = NULL;
+    tx->post_balances = NULL;
+    tx->balance_count = 0;
+    if (!idx_json_is_object(meta)) {
+        return IDX_OK;
+    }
+
+    idx_json_val pre = idx_json_get(meta, "preBalances");
+    idx_json_val post = idx_json_get(meta, "postBalances");
+    bool has_pre = idx_json_is_array(pre);
+    bool has_post = idx_json_is_array(post);
+    if (!has_pre && !has_post) {
+        return IDX_OK;
+    }
+    if (!has_pre || !has_post) {
+        return IDX_FAIL(err, IDX_ERR_PARSE,
+                        "preBalances and postBalances must both be present");
+    }
+
+    size_t count = idx_json_array_size(pre);
+    if (idx_json_array_size(post) != count) {
+        return IDX_FAIL(err, IDX_ERR_PARSE,
+                        "preBalances and postBalances differ in length");
+    }
+    if (count != tx->account_count) {
+        return IDX_FAIL(err, IDX_ERR_PARSE,
+                        "%zu balances for %zu accounts", count,
+                        tx->account_count);
+    }
+    if (count == 0) {
+        return IDX_OK;
+    }
+
+    void *pre_raw = NULL;
+    void *post_raw = NULL;
+    IDX_TRY(idx_arena_calloc(arena, count, sizeof(uint64_t), &pre_raw, err));
+    IDX_TRY(idx_arena_calloc(arena, count, sizeof(uint64_t), &post_raw, err));
+    uint64_t *pre_values = pre_raw;
+    uint64_t *post_values = post_raw;
+    for (size_t i = 0; i < count; i++) {
+        IDX_TRY(idx_json_as_u64(idx_json_array_get(pre, i), "preBalance",
+                                &pre_values[i], err));
+        IDX_TRY(idx_json_as_u64(idx_json_array_get(post, i), "postBalance",
+                                &post_values[i], err));
+    }
+
+    tx->pre_balances = pre_values;
+    tx->post_balances = post_values;
+    tx->balance_count = count;
+    return IDX_OK;
+}
+
+/* Decodes one pre/postTokenBalances entry. */
+static idx_status decode_token_balance(idx_json_val entry, size_t account_count,
+                                       idx_token_balance *out, idx_error *err) {
+    memset(out, 0, sizeof(*out));
+
+    uint64_t index = 0;
+    IDX_TRY(idx_json_read_u64(entry, "accountIndex", &index, err));
+    if (index >= account_count) {
+        return IDX_FAIL(err, IDX_ERR_PARSE,
+                        "token balance accountIndex %llu is past the %zu "
+                        "accounts",
+                        (unsigned long long)index, account_count);
+    }
+    out->account_index = (uint8_t)index;
+
+    IDX_TRY(read_pubkey_field(entry, "mint", &out->mint, err));
+
+    idx_json_val owner = idx_json_get(entry, "owner");
+    if (idx_json_is_string(owner)) {
+        IDX_TRY(decode_pubkey_value(owner, "token balance owner", &out->owner,
+                                    err));
+        out->has_owner = true;
+    }
+    idx_json_val program_id = idx_json_get(entry, "programId");
+    if (idx_json_is_string(program_id)) {
+        IDX_TRY(decode_pubkey_value(program_id, "token balance programId",
+                                    &out->program_id, err));
+        out->has_program_id = true;
+    }
+
+    idx_json_val ui;
+    IDX_TRY(idx_json_read_object(entry, "uiTokenAmount", &ui, err));
+    idx_slice amount_text;
+    IDX_TRY(idx_json_read_string(ui, "amount", &amount_text, err));
+    IDX_TRY(parse_u64_decimal(amount_text, &out->amount, err));
+    uint64_t decimals = 0;
+    IDX_TRY(idx_json_read_u64(ui, "decimals", &decimals, err));
+    if (decimals > UINT8_MAX) {
+        return IDX_FAIL(err, IDX_ERR_PARSE, "token decimals %llu does not fit "
+                        "in a byte", (unsigned long long)decimals);
+    }
+    out->decimals = (uint8_t)decimals;
+    return IDX_OK;
+}
+
+/* Decodes a pre/postTokenBalances array, absent or empty being no error. */
+static idx_status decode_token_balances(idx_json_val meta, const char *key,
+                                        size_t account_count, idx_arena *arena,
+                                        const idx_token_balance **out_list,
+                                        size_t *out_count, idx_error *err) {
+    *out_list = NULL;
+    *out_count = 0;
+    if (!idx_json_is_object(meta)) {
+        return IDX_OK;
+    }
+    idx_json_val array = idx_json_get(meta, key);
+    if (!idx_json_is_array(array)) {
+        return IDX_OK;
+    }
+    size_t count = idx_json_array_size(array);
+    if (count == 0) {
+        return IDX_OK;
+    }
+
+    void *raw = NULL;
+    IDX_TRY(idx_arena_calloc(arena, count, sizeof(idx_token_balance), &raw,
+                             err));
+    idx_token_balance *list = raw;
+    for (size_t i = 0; i < count; i++) {
+        IDX_TRY(decode_token_balance(idx_json_array_get(array, i), account_count,
+                                     &list[i], err));
+    }
+    *out_list = list;
+    *out_count = count;
+    return IDX_OK;
+}
+
+/* Decodes meta.logMessages: an array of strings, or null when the runtime
+ * truncated them. Each log borrows the document. */
+static idx_status decode_logs(idx_json_val meta, idx_arena *arena,
+                              idx_transaction *tx, idx_error *err) {
+    tx->logs = NULL;
+    tx->log_count = 0;
+    if (!idx_json_is_object(meta)) {
+        return IDX_OK;
+    }
+    idx_json_val array = idx_json_get(meta, "logMessages");
+    if (!idx_json_is_array(array)) {
+        return IDX_OK;
+    }
+    size_t count = idx_json_array_size(array);
+    if (count == 0) {
+        return IDX_OK;
+    }
+
+    void *raw = NULL;
+    IDX_TRY(idx_arena_calloc(arena, count, sizeof(idx_slice), &raw, err));
+    idx_slice *list = raw;
+    for (size_t i = 0; i < count; i++) {
+        IDX_TRY(idx_json_as_string(idx_json_array_get(array, i), "log message",
+                                   &list[i], err));
+    }
+    tx->logs = list;
+    tx->log_count = count;
     return IDX_OK;
 }
 
@@ -371,6 +574,14 @@ static idx_status decode_transaction(idx_json_val entry, idx_arena *arena,
 
     IDX_TRY(decode_inner_instructions(meta, tx->account_count, arena, tx, err));
     IDX_TRY(decode_meta_summary(meta, tx, err));
+    IDX_TRY(decode_balances(meta, arena, tx, err));
+    IDX_TRY(decode_token_balances(meta, "preTokenBalances", tx->account_count,
+                                  arena, &tx->pre_token_balances,
+                                  &tx->pre_token_balance_count, err));
+    IDX_TRY(decode_token_balances(meta, "postTokenBalances", tx->account_count,
+                                  arena, &tx->post_token_balances,
+                                  &tx->post_token_balance_count, err));
+    IDX_TRY(decode_logs(meta, arena, tx, err));
     return IDX_OK;
 }
 

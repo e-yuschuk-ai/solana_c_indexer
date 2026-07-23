@@ -109,8 +109,7 @@ handling is a requirement rather than a refinement.
 - [x] Legacy and versioned (v0) message support
 - [x] Address lookup table resolution
 - [x] Instruction and inner-instruction decoding
-- [ ] Transaction metadata: status, fee, pre/post balances, token balances, logs
-      (status and fee done; balances, token balances and logs remain)
+- [x] Transaction metadata: status, fee, pre/post balances, token balances, logs
 - [ ] Built-in program instruction decoders (System, SPL Token, SPL Token-2022)
 
 ## M6 — Domain decoding

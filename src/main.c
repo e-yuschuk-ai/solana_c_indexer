@@ -54,6 +54,9 @@ static idx_status count_block(const idx_raw_block *block, void *user,
     size_t instructions = 0;
     size_t inner = 0;
     size_t versioned = 0;
+    uint64_t fees = 0;
+    size_t token_balances = 0;
+    size_t logs = 0;
     for (size_t i = 0; i < decoded.transaction_count; i++) {
         const idx_transaction *tx = &decoded.transactions[i];
         instructions += tx->instruction_count;
@@ -63,11 +66,17 @@ static idx_status count_block(const idx_raw_block *block, void *user,
         if (tx->version != IDX_TX_VERSION_LEGACY) {
             versioned++;
         }
+        fees += tx->fee;
+        token_balances += tx->pre_token_balance_count;
+        token_balances += tx->post_token_balance_count;
+        logs += tx->log_count;
     }
 
-    IDX_DEBUG("slot %llu: %zu txns (%zu v0), %zu ix, %zu inner, %.2f MiB from %s",
+    IDX_DEBUG("slot %llu: %zu txns (%zu v0), %zu ix, %zu inner, %llu lamports "
+              "fees, %zu token balances, %zu logs, %.2f MiB from %s",
               (unsigned long long)block->slot, decoded.transaction_count,
-              versioned, instructions, inner,
+              versioned, instructions, inner, (unsigned long long)fees,
+              token_balances, logs,
               (double)block->bytes / (1024.0 * 1024.0),
               idx_block_origin_name(block->origin));
     return IDX_OK;
