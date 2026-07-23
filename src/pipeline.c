@@ -270,6 +270,18 @@ static void save_cursor(idx_pipeline *pipeline, bool force) {
         return;
     }
     pipeline->last_save = now;
+
+    /* The forced save is the last write before the process exits, so it is
+     * the one an operator most needs to see; periodic saves during a run
+     * would be one line per second and belong at DEBUG instead. */
+    idx_log_level level = force ? IDX_LOG_INFO : IDX_LOG_DEBUG;
+    if (cursor->last_indexed != IDX_SLOT_NONE) {
+        IDX_LOG(level, "cursor: persisted to %s, last indexed slot %llu",
+                cursor->path, (unsigned long long)cursor->last_indexed);
+    } else {
+        IDX_LOG(level, "cursor: persisted to %s, nothing indexed yet",
+                cursor->path);
+    }
 }
 
 /*
@@ -929,12 +941,18 @@ idx_status idx_pipeline_run(idx_pipeline *pipeline, idx_error *err) {
     }
 
     pipeline->last_save = monotonic_seconds();
-    pipeline->floor = idx_slot_cursor_resume_slot(pipeline->options.cursor);
+    const idx_slot_cursor *cursor = pipeline->options.cursor;
+    pipeline->floor = idx_slot_cursor_resume_slot(cursor);
 
     if (pipeline->floor == 0) {
         IDX_INFO("following from the current tip");
+    } else if (cursor->last_indexed != IDX_SLOT_NONE) {
+        IDX_INFO("resuming at slot %llu (from cursor file %s)",
+                 (unsigned long long)pipeline->floor, cursor->path);
+        queue_backfill(pipeline);
     } else {
-        IDX_INFO("resuming at slot %llu", (unsigned long long)pipeline->floor);
+        IDX_INFO("resuming at slot %llu (--start-slot)",
+                 (unsigned long long)pipeline->floor);
         queue_backfill(pipeline);
     }
 

@@ -304,6 +304,11 @@ idx_status idx_config_apply_env(idx_config *cfg, idx_error *err) {
         if (value == NULL || *value == '\0') {
             continue;
         }
+        /* Says which key changed and why, not the value: idx_config_log
+         * prints the resolved value moments later, and rpc_url/wss_url can
+         * carry an API key in the URL. */
+        IDX_INFO("config: %s set from %s", mapping[i].key,
+                 mapping[i].variable);
         IDX_TRY(idx_config_apply_kv(cfg, mapping[i].key, value,
                                     mapping[i].variable, err));
     }
@@ -374,6 +379,7 @@ idx_status idx_config_apply_args(idx_config *cfg, int argc, char **argv,
             value = argv[++i];
         }
 
+        IDX_INFO("config: %s set from the command line", key);
         IDX_TRY(idx_config_apply_kv(cfg, key, value, "command line", err));
     }
     return IDX_OK;
@@ -436,6 +442,10 @@ idx_status idx_config_load(idx_config *cfg, int argc, char **argv,
                                IDX_CONFIG_DEFAULT_FILE, "config", "default",
                                err));
             IDX_TRY(idx_config_apply_file(cfg, IDX_CONFIG_DEFAULT_FILE, err));
+        } else {
+            IDX_INFO("config: no %s in the working directory; using "
+                     "defaults, environment and command-line flags only",
+                     IDX_CONFIG_DEFAULT_FILE);
         }
     }
 
