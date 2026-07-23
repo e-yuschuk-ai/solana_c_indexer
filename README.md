@@ -106,6 +106,7 @@ Settings are resolved from four sources, each overriding the previous one:
 | `tx_details` | `INDEXER_TX_DETAILS` | `--tx-details` | `full` |
 | `block_filter` | `INDEXER_BLOCK_FILTER` | `--block-filter` | `all` |
 | `blocks_range_limit` | `INDEXER_BLOCKS_RANGE_LIMIT` | `--blocks-range-limit` | plan-dependent |
+| `state_file` | `INDEXER_STATE_FILE` | `--state-file` | *(disabled)* |
 
 Two starting points are provided: [`.env.example`](.env.example) for the
 environment variables `run.sh` loads, and

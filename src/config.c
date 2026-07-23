@@ -171,6 +171,10 @@ idx_status idx_config_apply_kv(idx_config *cfg, const char *key,
         return set_string(cfg->config_file, sizeof(cfg->config_file), value,
                           key, source, err);
     }
+    if (strcmp(key, "state_file") == 0) {
+        return set_string(cfg->state_file, sizeof(cfg->state_file), value, key,
+                          source, err);
+    }
 
     return IDX_FAIL(err, IDX_ERR_NOT_FOUND, "%s: unknown setting '%s'", source,
                     key);
@@ -273,6 +277,7 @@ idx_status idx_config_apply_env(idx_config *cfg, idx_error *err) {
         {"INDEXER_TX_DETAILS", "tx_details"},
         {"INDEXER_BLOCK_FILTER", "block_filter"},
         {"INDEXER_BLOCKS_RANGE_LIMIT", "blocks_range_limit"},
+        {"INDEXER_STATE_FILE", "state_file"},
     };
 
     if (cfg == NULL) {
@@ -515,6 +520,8 @@ void idx_config_log(const idx_config *cfg) {
         IDX_INFO("config: blocks_range_limit = %" PRIu64,
                  cfg->blocks_range_limit);
     }
+    IDX_INFO("config: state_file = %s",
+             (cfg->state_file[0] != '\0') ? cfg->state_file : "<disabled>");
     if (cfg->config_file[0] != '\0') {
         IDX_INFO("config: loaded from %s", cfg->config_file);
     }
@@ -536,13 +543,14 @@ void idx_config_usage(FILE *out, const char *program) {
             "      --tx-details D     full, accounts, signatures or none\n"
             "      --block-filter F   'all' (default) or a program/account key\n"
             "      --blocks-range-limit N  getBlocks span cap for the plan\n"
+            "      --state-file PATH  Slot cursor for resume (default: disabled)\n"
             "  -h, --help             Show this message\n"
             "\n"
             "Environment:\n"
             "  SOLANA_RPC_URL, SOLANA_WSS_URL, INDEXER_LOG_LEVEL,\n"
             "  INDEXER_START_SLOT, INDEXER_END_SLOT, INDEXER_CONCURRENCY,\n"
             "  INDEXER_COMMITMENT, INDEXER_TX_DETAILS, INDEXER_BLOCK_FILTER,\n"
-            "  INDEXER_BLOCKS_RANGE_LIMIT\n"
+            "  INDEXER_BLOCKS_RANGE_LIMIT, INDEXER_STATE_FILE\n"
             "\n"
             "Precedence: defaults < config file < environment < command line\n",
             (program != NULL) ? program : "indexer", IDX_CONFIG_DEFAULT_FILE,

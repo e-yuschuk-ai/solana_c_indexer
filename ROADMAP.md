@@ -67,7 +67,7 @@ Real-time by default: blocks arrive on the socket, and the RPC client recovers
 whatever the socket missed. The socket delivers ~12 MiB/s, so backpressure
 handling is a requirement rather than a refinement.
 
-- [ ] Slot cursor: track last indexed slot, resume after restart, and record
+- [x] Slot cursor: track last indexed slot, resume after restart, and record
       the last slot seen before a disconnect so the gap can be replayed
 - [ ] Follow mode driven by `blockSubscribe` notifications
 - [ ] Bounded queue between the receive loop and the decoders, so a slow

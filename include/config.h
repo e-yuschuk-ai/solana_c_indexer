@@ -35,6 +35,14 @@ typedef struct {
     char rpc_url[IDX_CONFIG_STR_MAX];
     char wss_url[IDX_CONFIG_STR_MAX];
     char config_file[IDX_CONFIG_STR_MAX];
+
+    /*
+     * Where the slot cursor is persisted so indexing resumes after a restart.
+     * Empty disables persistence: the indexer then always starts from
+     * start_slot (or the tip), keeping no memory across runs.
+     */
+    char state_file[IDX_CONFIG_STR_MAX];
+
     idx_log_level log_level;
     uint64_t start_slot; /* 0 = start from the current chain tip */
     uint64_t end_slot;   /* 0 = follow the tip indefinitely */

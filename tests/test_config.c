@@ -18,6 +18,7 @@ static void test_defaults(void) {
     TEST_EQ_INT(cfg.tx_details, IDX_TX_DETAILS_FULL);
     TEST_EQ_STR(cfg.block_filter, "all");
     TEST_EQ_UINT(cfg.blocks_range_limit, 0u);
+    TEST_EQ_STR(cfg.state_file, ""); /* persistence disabled by default */
     TEST_ASSERT(!cfg.help);
 }
 
@@ -123,6 +124,11 @@ static void test_apply_kv(void) {
                                     NULL),
                 IDX_OK);
     TEST_EQ_UINT(cfg.start_slot, 250000000u);
+
+    TEST_EQ_INT(idx_config_apply_kv(&cfg, "state_file", "/var/lib/idx.cursor",
+                                    "test", NULL),
+                IDX_OK);
+    TEST_EQ_STR(cfg.state_file, "/var/lib/idx.cursor");
 
     idx_error err;
     idx_error_clear(&err);

@@ -50,3 +50,9 @@ block_filter = all
 # per plan (some free tiers allow only 5). 0 uses the client default.
 # Environment: INDEXER_BLOCKS_RANGE_LIMIT   Flag: --blocks-range-limit
 # blocks_range_limit = 0
+
+# File the slot cursor is persisted to, so indexing resumes where it stopped
+# after a restart. Unset (the default) disables persistence: the indexer then
+# always starts from start_slot or the tip, remembering nothing across runs.
+# Environment: INDEXER_STATE_FILE   Flag: --state-file
+# state_file = /var/lib/solana_c_indexer/cursor
