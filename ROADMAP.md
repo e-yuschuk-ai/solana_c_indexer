@@ -69,7 +69,8 @@ handling is a requirement rather than a refinement.
 
 - [x] Slot cursor: track last indexed slot, resume after restart, and record
       the last slot seen before a disconnect so the gap can be replayed
-- [ ] Follow mode driven by `blockSubscribe` notifications
+- [x] Follow mode driven by `blockSubscribe` notifications, falling back to
+      `slotSubscribe` + `getBlock` where the endpoint does not offer it
 - [ ] Bounded queue between the receive loop and the decoders, so a slow
       consumer never stalls the socket read
 - [ ] Overflow policy: abandon the socket backlog and record the affected slot
@@ -80,7 +81,9 @@ handling is a requirement rather than a refinement.
 - [ ] Backfill mode for historical ranges, sharing the gap fetch path
 - [ ] Handle skipped slots and blocks the endpoint no longer retains
 - [ ] Out-of-order arrival: commit in slot order, buffer what arrives early
-- [ ] Graceful shutdown on `SIGINT`/`SIGTERM`, draining in-flight work
+- [~] Graceful shutdown on `SIGINT`/`SIGTERM`, draining in-flight work — stops
+      at a block boundary, unsubscribes and persists the cursor; there is
+      nothing further to drain until the bounded queue exists
 
 ## M5 — Decoding
 

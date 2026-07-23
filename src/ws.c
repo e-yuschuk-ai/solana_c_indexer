@@ -1,6 +1,7 @@
 #include "ws.h"
 
 #include <curl/curl.h>
+#include <errno.h>
 #include <poll.h>
 #include <stdlib.h>
 #include <string.h>
@@ -219,6 +220,15 @@ static idx_status wait_ready(idx_ws *ws, short events, int timeout_ms,
 
     int ready = poll(&descriptor, 1, timeout_ms);
     if (ready < 0) {
+        /*
+         * poll is never restarted after a signal, whatever SA_RESTART says, so
+         * a process that handles signals at all will land here. It means "not
+         * ready yet", not a broken connection: the caller re-polls against its
+         * own deadline.
+         */
+        if (errno == EINTR) {
+            return IDX_OK;
+        }
         return IDX_FAIL(err, IDX_ERR_NETWORK, "poll on the WebSocket failed");
     }
     if (ready == 0) {
