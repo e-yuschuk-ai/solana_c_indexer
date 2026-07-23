@@ -69,9 +69,15 @@ size_t idx_base58_encoded_max(size_t byte_count) {
     return byte_count * 138 / 100 + 1;
 }
 
-/* log(58)/log(256) is about 0.733. */
+/*
+ * The 0.733 density factor (log58/log256) bounds only the numeric part of the
+ * string. A leading '1' decodes to a whole zero byte — a 1:1 ratio the factor
+ * understates — so an all-'1's string of length L decodes to L bytes, more
+ * than 0.733*L+1 once L is past 3. text_len is therefore the only bound that
+ * holds for every input, and is what the reference base58 decoders allocate.
+ */
 size_t idx_base58_decoded_max(size_t text_len) {
-    return text_len * 733 / 1000 + 1;
+    return text_len;
 }
 
 idx_status idx_base58_encode(idx_slice input, char *out, size_t out_size,

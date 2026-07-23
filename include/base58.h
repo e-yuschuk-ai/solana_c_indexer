@@ -18,7 +18,10 @@
 /* Upper bound on encoded characters, excluding the NUL terminator. */
 size_t idx_base58_encoded_max(size_t byte_count);
 
-/* Upper bound on decoded bytes for `text_len` characters. */
+/*
+ * Upper bound on decoded bytes for `text_len` characters. Reached when every
+ * character is '1', which decodes to that many zero bytes.
+ */
 size_t idx_base58_decoded_max(size_t text_len);
 
 /*

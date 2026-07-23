@@ -187,29 +187,45 @@ static void test_decode_exact(void) {
 }
 
 static void test_size_bounds(void) {
-    /* The bounds must never be under the real requirement. */
-    for (size_t len = 0; len <= 128; len++) {
-        uint8_t raw[128];
-        memset(raw, 0xFF, len);
+    /*
+     * The bounds must never be under the real requirement. Both fills matter:
+     * 0xFF is the densest numeric input, while 0x00 encodes to all '1's, whose
+     * decode is 1:1 and stresses the decoded bound the density factor misses.
+     */
+    const uint8_t fills[] = {0xFF, 0x00};
+    for (size_t f = 0; f < sizeof(fills); f++) {
+        for (size_t len = 0; len <= 128; len++) {
+            uint8_t raw[128];
+            memset(raw, fills[f], len);
 
-        char encoded[256];
-        size_t encoded_len = 0;
-        TEST_EQ_INT(idx_base58_encode(idx_slice_make(raw, len), encoded,
-                                      sizeof(encoded), &encoded_len, NULL),
-                    IDX_OK);
-        TEST_CHECK(encoded_len <= idx_base58_encoded_max(len),
-                   "encoded %zu bytes into %zu chars, bound said %zu", len,
-                   encoded_len, idx_base58_encoded_max(len));
+            char encoded[256];
+            size_t encoded_len = 0;
+            TEST_EQ_INT(idx_base58_encode(idx_slice_make(raw, len), encoded,
+                                          sizeof(encoded), &encoded_len, NULL),
+                        IDX_OK);
+            TEST_CHECK(encoded_len <= idx_base58_encoded_max(len),
+                       "encoded %zu bytes into %zu chars, bound said %zu", len,
+                       encoded_len, idx_base58_encoded_max(len));
 
-        uint8_t decoded[256];
-        size_t decoded_len = 0;
-        TEST_EQ_INT(idx_base58_decode(encoded, encoded_len, decoded,
-                                      sizeof(decoded), &decoded_len, NULL),
-                    IDX_OK);
-        TEST_CHECK(decoded_len <= idx_base58_decoded_max(encoded_len),
-                   "decoded %zu chars into %zu bytes, bound said %zu",
-                   encoded_len, decoded_len,
-                   idx_base58_decoded_max(encoded_len));
+            /*
+             * Decode into a buffer sized exactly by the bound, the way callers
+             * that decode variable-length data do. If the bound is too small
+             * this fails outright, not just at the trailing check.
+             */
+            size_t capacity = idx_base58_decoded_max(encoded_len);
+            uint8_t decoded[256];
+            TEST_ASSERT(capacity <= sizeof(decoded));
+            size_t decoded_len = 0;
+            TEST_EQ_INT(idx_base58_decode(encoded, encoded_len, decoded,
+                                          capacity, &decoded_len, NULL),
+                        IDX_OK);
+            TEST_CHECK(decoded_len <= capacity,
+                       "decoded %zu chars into %zu bytes, bound said %zu",
+                       encoded_len, decoded_len, capacity);
+            TEST_CHECK(decoded_len == len,
+                       "fill 0x%02X len %zu round-tripped as %zu", fills[f], len,
+                       decoded_len);
+        }
     }
 }
 
