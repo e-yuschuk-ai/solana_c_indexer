@@ -1,6 +1,11 @@
 # Build output
 build/
 
+# Editor scratch files
+*.swp
+*.swo
+*~
+
 # Local configuration (may contain endpoint credentials)
 indexer.conf
 *.local.conf

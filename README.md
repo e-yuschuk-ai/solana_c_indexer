@@ -21,12 +21,20 @@ transports are exercised through the tools described below.
 - For debug builds: AddressSanitizer and UndefinedBehaviorSanitizer support
 
 libcurl is required for both the JSON-RPC client and the WebSocket
-subscriptions, and it must have `ws`/`wss` compiled in (check with
-`curl --version`):
+subscriptions, and it must have `ws`/`wss` compiled in — which a package name
+does not guarantee, so it is worth checking.
+
+On Debian and its derivatives, `requirements.sh` installs everything and then
+verifies it, including the `wss` support:
 
 ```sh
-sudo apt install libcurl4-openssl-dev     # Debian/Ubuntu
+./requirements.sh            # install the build requirements
+./requirements.sh docker     # also install the container toolchain
+./requirements.sh check      # verify only, install nothing
 ```
+
+Elsewhere, install libcurl's development package by hand (the header, the link
+target and `curl-config`) and run `./requirements.sh check` to confirm.
 
 The JSON parser (yyjson) is vendored in `vendor/`, so it needs no installation.
 See [docs/decisions.md](docs/decisions.md) for why each was chosen.
