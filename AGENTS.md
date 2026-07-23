@@ -17,6 +17,14 @@ This project is a **Solana indexer written in C**.
 Conversation with the user may happen in any language, but nothing written into
 the repository should be in a language other than English.
 
+## Commit trailers
+
+Commits authored by an AI agent must include a `Reasoning-Effort: <value>`
+trailer, alongside any `Co-Authored-By`/session trailers the tool already
+adds, using the value the session actually ran with (e.g. `Reasoning-Effort:
+40`), not a qualitative label. Do not retroactively amend older commits to
+add this — only apply it going forward.
+
 ## Roadmap-driven work
 
 `ROADMAP.md` is the source of truth for what gets built and in what order.
