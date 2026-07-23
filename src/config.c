@@ -45,6 +45,7 @@ void idx_config_defaults(idx_config *cfg) {
     cfg->start_slot = 0;
     cfg->end_slot = 0;
     cfg->concurrency = 4;
+    cfg->queue_depth = 0; /* the ring's default */
     snprintf(cfg->commitment, sizeof(cfg->commitment), "confirmed");
     cfg->tx_details = IDX_TX_DETAILS_FULL;
     snprintf(cfg->block_filter, sizeof(cfg->block_filter), "all");
@@ -137,6 +138,19 @@ idx_status idx_config_apply_kv(idx_config *cfg, const char *key,
                             source, value, IDX_CONFIG_MAX_CONCURRENCY);
         }
         cfg->concurrency = (uint32_t)parsed;
+        return IDX_OK;
+    }
+    if (strcmp(key, "queue_depth") == 0) {
+        uint64_t parsed = 0;
+        IDX_TRY(parse_u64(value, &parsed, key, source, err));
+        /* A depth of one leaves the producer nothing to drop but the entry the
+         * consumer is reading, so two is the floor. */
+        if (parsed == 1 || parsed > IDX_CONFIG_MAX_QUEUE_DEPTH) {
+            return IDX_FAIL(err, IDX_ERR_RANGE,
+                            "%s: queue_depth = %s must be 0 or between 2 and %u",
+                            source, value, IDX_CONFIG_MAX_QUEUE_DEPTH);
+        }
+        cfg->queue_depth = (uint32_t)parsed;
         return IDX_OK;
     }
     if (strcmp(key, "commitment") == 0) {
@@ -273,6 +287,7 @@ idx_status idx_config_apply_env(idx_config *cfg, idx_error *err) {
         {"INDEXER_START_SLOT", "start_slot"},
         {"INDEXER_END_SLOT", "end_slot"},
         {"INDEXER_CONCURRENCY", "concurrency"},
+        {"INDEXER_QUEUE_DEPTH", "queue_depth"},
         {"INDEXER_COMMITMENT", "commitment"},
         {"INDEXER_TX_DETAILS", "tx_details"},
         {"INDEXER_BLOCK_FILTER", "block_filter"},
@@ -459,6 +474,12 @@ idx_status idx_config_validate(const idx_config *cfg, idx_error *err) {
                         "concurrency must be between 1 and %u",
                         IDX_CONFIG_MAX_CONCURRENCY);
     }
+    if (cfg->queue_depth == 1 ||
+        cfg->queue_depth > IDX_CONFIG_MAX_QUEUE_DEPTH) {
+        return IDX_FAIL(err, IDX_ERR_RANGE,
+                        "queue_depth must be 0 or between 2 and %u",
+                        IDX_CONFIG_MAX_QUEUE_DEPTH);
+    }
     if (cfg->commitment[0] == '\0') {
         return IDX_FAIL(err, IDX_ERR_INVALID_ARG, "commitment must be set");
     }
@@ -513,6 +534,8 @@ void idx_config_log(const idx_config *cfg) {
     IDX_INFO("config: end_slot = %" PRIu64 "%s", cfg->end_slot,
              (cfg->end_slot == 0) ? " (follow)" : "");
     IDX_INFO("config: concurrency = %" PRIu32, cfg->concurrency);
+    IDX_INFO("config: queue_depth = %" PRIu32 "%s", cfg->queue_depth,
+             (cfg->queue_depth == 0) ? " (default)" : "");
     IDX_INFO("config: commitment = %s", cfg->commitment);
     IDX_INFO("config: tx_details = %s", idx_tx_details_name(cfg->tx_details));
     IDX_INFO("config: block_filter = %s", cfg->block_filter);
@@ -539,6 +562,7 @@ void idx_config_usage(FILE *out, const char *program) {
             "      --start-slot N     First slot to index (0 = chain tip)\n"
             "      --end-slot N       Last slot to index (0 = follow the tip)\n"
             "      --concurrency N    Parallel fetchers (1-%u)\n"
+            "      --queue-depth N    Blocks buffered between threads (2-%u)\n"
             "      --commitment C     confirmed (default) or finalized\n"
             "      --tx-details D     full, accounts, signatures or none\n"
             "      --block-filter F   'all' (default) or a program/account key\n"
@@ -549,10 +573,11 @@ void idx_config_usage(FILE *out, const char *program) {
             "Environment:\n"
             "  SOLANA_RPC_URL, SOLANA_WSS_URL, INDEXER_LOG_LEVEL,\n"
             "  INDEXER_START_SLOT, INDEXER_END_SLOT, INDEXER_CONCURRENCY,\n"
+            "  INDEXER_QUEUE_DEPTH,\n"
             "  INDEXER_COMMITMENT, INDEXER_TX_DETAILS, INDEXER_BLOCK_FILTER,\n"
             "  INDEXER_BLOCKS_RANGE_LIMIT, INDEXER_STATE_FILE\n"
             "\n"
             "Precedence: defaults < config file < environment < command line\n",
             (program != NULL) ? program : "indexer", IDX_CONFIG_DEFAULT_FILE,
-            IDX_CONFIG_MAX_CONCURRENCY);
+            IDX_CONFIG_MAX_CONCURRENCY, IDX_CONFIG_MAX_QUEUE_DEPTH);
 }

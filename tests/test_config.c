@@ -14,6 +14,7 @@ static void test_defaults(void) {
     TEST_EQ_UINT(cfg.start_slot, 0u);
     TEST_EQ_UINT(cfg.end_slot, 0u);
     TEST_EQ_UINT(cfg.concurrency, 4u);
+    TEST_EQ_UINT(cfg.queue_depth, 0u); /* the ring's default */
     TEST_EQ_STR(cfg.commitment, "confirmed");
     TEST_EQ_INT(cfg.tx_details, IDX_TX_DETAILS_FULL);
     TEST_EQ_STR(cfg.block_filter, "all");
@@ -146,6 +147,27 @@ static void test_apply_kv(void) {
                 IDX_ERR_RANGE);
     TEST_EQ_INT(idx_config_apply_kv(&cfg, "concurrency", "99999", "test", NULL),
                 IDX_ERR_RANGE);
+
+    /* A depth of one leaves the ring nothing to drop; zero means "default". */
+    TEST_EQ_INT(idx_config_apply_kv(&cfg, "queue_depth", "1", "test", NULL),
+                IDX_ERR_RANGE);
+    TEST_EQ_INT(idx_config_apply_kv(&cfg, "queue_depth", "99999", "test", NULL),
+                IDX_ERR_RANGE);
+    TEST_EQ_INT(idx_config_apply_kv(&cfg, "queue_depth", "0", "test", NULL),
+                IDX_OK);
+    TEST_EQ_INT(idx_config_apply_kv(&cfg, "queue_depth", "2", "test", NULL),
+                IDX_OK);
+    TEST_EQ_UINT(cfg.queue_depth, 2u);
+
+    /* validate rejects the same range when it is set directly. */
+    idx_config valid;
+    idx_config_defaults(&valid);
+    snprintf(valid.rpc_url, sizeof(valid.rpc_url), "https://example.invalid");
+    TEST_EQ_INT(idx_config_validate(&valid, NULL), IDX_OK);
+    valid.queue_depth = 1;
+    TEST_EQ_INT(idx_config_validate(&valid, NULL), IDX_ERR_RANGE);
+    valid.queue_depth = 16;
+    TEST_EQ_INT(idx_config_validate(&valid, NULL), IDX_OK);
 }
 
 static void test_string_too_long(void) {

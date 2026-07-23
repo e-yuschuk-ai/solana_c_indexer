@@ -71,20 +71,22 @@ handling is a requirement rather than a refinement.
       the last slot seen before a disconnect so the gap can be replayed
 - [x] Follow mode driven by `blockSubscribe` notifications, falling back to
       `slotSubscribe` + `getBlock` where the endpoint does not offer it
-- [ ] Bounded queue between the receive loop and the decoders, so a slow
+- [x] Bounded queue between the receive loop and the decoders, so a slow
       consumer never stalls the socket read (decision D6)
-- [ ] Overflow policy: abandon the socket backlog and record the affected slot
+- [x] Overflow policy: abandon the socket backlog and record the affected slot
       range as a gap rather than letting the provider drop the connection
-      (decision D6)
+      (decision D6) — the ring drops its oldest entry and the sequence gap
+      makes the loss visible; handing the range to the fetcher is the item
+      below
 - [ ] Gap detection: any distance between the cursor and a notified slot is a
       hole, whatever caused it
 - [ ] Gap and backfill fetching over HTTP with configurable concurrency
 - [ ] Backfill mode for historical ranges, sharing the gap fetch path
 - [ ] Handle skipped slots and blocks the endpoint no longer retains
 - [ ] Out-of-order arrival: commit in slot order, buffer what arrives early
-- [~] Graceful shutdown on `SIGINT`/`SIGTERM`, draining in-flight work — stops
-      at a block boundary, unsubscribes and persists the cursor; there is
-      nothing further to drain until the bounded queue exists
+- [x] Graceful shutdown on `SIGINT`/`SIGTERM`, draining in-flight work — the
+      receive loop stops at a block boundary and unsubscribes, the processing
+      thread drains what is queued, and the cursor is persisted last
 
 ## M5 — Decoding
 

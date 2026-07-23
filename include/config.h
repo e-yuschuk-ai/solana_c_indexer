@@ -22,6 +22,7 @@
 
 #define IDX_CONFIG_STR_MAX 512
 #define IDX_CONFIG_MAX_CONCURRENCY 1024u
+#define IDX_CONFIG_MAX_QUEUE_DEPTH 1024u
 
 /* How much of each transaction blockSubscribe/getBlock returns. */
 typedef enum {
@@ -47,6 +48,17 @@ typedef struct {
     uint64_t start_slot; /* 0 = start from the current chain tip */
     uint64_t end_slot;   /* 0 = follow the tip indefinitely */
     uint32_t concurrency;
+
+    /*
+     * Blocks that may sit between the receive thread and the processing thread
+     * (decision D6). This is a memory setting as much as a latency one: the
+     * ring holds depth+1 payload buffers, each growing to the largest block it
+     * has carried, so a depth of eight against 11 MiB blocks costs roughly
+     * 100 MiB. Deeper rides out longer storage stalls; shallower drops sooner,
+     * and a drop costs a getBlock rather than data. 0 selects the ring's
+     * default.
+     */
+    uint32_t queue_depth;
 
     /*
      * Subscription shape. The default — follow every block at full detail — is

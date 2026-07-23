@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "ring.h"
 #include "test.h"
 
 static idx_json_doc *parse(const char *text) {
@@ -293,6 +294,10 @@ static void test_open_and_close(void) {
     TEST_EQ_UINT(stats.slots_missed, 0u);
     TEST_EQ_UINT(stats.bytes, 0u);
     TEST_ASSERT(!stats.used_fallback);
+    /* The ring exists from open, sized by the config. */
+    TEST_EQ_UINT(stats.queue_dropped, 0u);
+    TEST_EQ_UINT(stats.queue_high_water, 0u);
+    TEST_EQ_UINT(stats.queue_depth, IDX_RING_DEFAULT_DEPTH);
     /* Where the cursor already was, not a fresh zero. */
     TEST_EQ_UINT(stats.last_indexed, 250000000u);
 
@@ -303,6 +308,37 @@ static void test_open_and_close(void) {
 
     idx_pipeline_close(pipeline);
     idx_pipeline_close(NULL);
+}
+
+/* The configured depth reaches the ring. */
+static void test_queue_depth_is_configured(void) {
+    idx_config cfg;
+    ready_config(&cfg);
+    cfg.queue_depth = 3;
+
+    idx_slot_cursor cursor;
+    idx_slot_cursor_init(&cursor, 0);
+
+    idx_pipeline_options options;
+    idx_pipeline_options_init(&options);
+    options.config = &cfg;
+    options.cursor = &cursor;
+    options.handler = accept_block;
+
+    idx_pipeline *pipeline = NULL;
+    TEST_EQ_INT(idx_pipeline_open(&options, &pipeline, NULL), IDX_OK);
+
+    idx_pipeline_stats stats;
+    idx_pipeline_get_stats(pipeline, &stats);
+    TEST_EQ_UINT(stats.queue_depth, 3u);
+
+    idx_pipeline_close(pipeline);
+
+    /* And a depth the ring refuses is refused here rather than at run time. */
+    cfg.queue_depth = 1;
+    idx_error err;
+    idx_error_clear(&err);
+    TEST_EQ_INT(idx_pipeline_open(&options, &pipeline, &err), IDX_ERR_RANGE);
 }
 
 static void test_open_rejects_unusable_subscription(void) {
@@ -353,6 +389,7 @@ TEST_MAIN({
     TEST_RUN(test_options_init);
     TEST_RUN(test_open_rejects_incomplete_options);
     TEST_RUN(test_open_and_close);
+    TEST_RUN(test_queue_depth_is_configured);
     TEST_RUN(test_open_rejects_unusable_subscription);
     TEST_RUN(test_run_rejects_null);
 })

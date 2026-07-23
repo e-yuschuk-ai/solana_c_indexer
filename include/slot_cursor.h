@@ -10,11 +10,14 @@
  *                 idx_slot_cursor_save writes it and idx_slot_cursor_open
  *                 reloads it — so a restart resumes where indexing stopped
  *                 rather than at the tip.
- *   last_seen     the highest slot the socket delivered this run. Kept in
- *                 memory only; it is never reset on a reconnect, which is what
- *                 lets the range missed while the socket was down be replayed:
- *                 the first notification after the drop, compared against
- *                 last_seen, exposes exactly the hole.
+ *   last_seen     the highest slot that reached the processing thread this
+ *                 run. Kept in memory only; it is never reset on a reconnect,
+ *                 which is what lets the range missed while the socket was
+ *                 down be replayed: the next slot to arrive, compared against
+ *                 last_seen, exposes exactly the hole. Because it is observed
+ *                 where the cursor is owned rather than where the socket is
+ *                 read (decision D6), a block the ring dropped counts as
+ *                 unseen — which is what the gap fetcher needs it to mean.
  *
  * The cursor is state plus persistence. Deciding that a distance between a
  * frontier and a notified slot is a gap, and fetching that gap, belong to the

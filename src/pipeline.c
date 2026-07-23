@@ -1,5 +1,6 @@
 #include "pipeline.h"
 
+#include <pthread.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,13 +8,14 @@
 
 #include "log.h"
 #include "pubsub.h"
+#include "ring.h"
 #include "rpc.h"
 
 /*
- * How long the loop blocks before looking at the stop flag. Noticing a dead
- * connection is the pubsub layer's job, not this one's, so the only thing this
- * bounds is how long a shutdown waits — and one idle poll per second costs
- * nothing next to 12 MiB/s of blocks.
+ * How long the receive loop blocks before looking at the stop flag. Noticing a
+ * dead connection is the pubsub layer's job, not this one's, so the only thing
+ * this bounds is how long a shutdown waits — and one idle poll per second
+ * costs nothing next to 12 MiB/s of blocks.
  */
 #define IDX_PIPELINE_POLL_TIMEOUT_MS 1000
 #define IDX_PIPELINE_SAVE_INTERVAL_MS 1000
@@ -23,19 +25,46 @@
 
 struct idx_pipeline {
     idx_pipeline_options options;
-    idx_arena arena;
-    idx_pipeline_stats stats;
-
     char subscribe_params[IDX_PIPELINE_PARAMS_MAX];
 
-    /* Lowest slot worth indexing. 0 means "wherever the tip is". */
-    idx_slot floor;
+    /* The hand-off. The receive thread publishes, the processing thread
+     * consumes; neither touches the other's state (decision D6). */
+    idx_ring *ring;
+    pthread_t processor;
+    bool processor_running;
 
-    /* Written by idx_pipeline_request_stop, which may be a signal handler. */
+    /*
+     * Written by idx_pipeline_request_stop, which may be a signal handler, and
+     * read by the receive loop.
+     */
     volatile sig_atomic_t stop;
 
-    double last_save; /* monotonic seconds */
+    /* Set by the processing thread when it gives up, so the receive loop stops
+     * feeding a pipeline that is going nowhere. Its status and message are only
+     * read after the join. */
+    volatile sig_atomic_t processor_failed;
+    idx_status processor_status;
+    idx_error processor_err;
+
+    /*
+     * Lowest slot worth indexing, 0 for "wherever the tip is". Fixed before the
+     * threads start, read-only afterwards.
+     */
+    idx_slot floor;
+
+    /*
+     * One struct, but each field has exactly one writer: the receive thread
+     * owns bytes, reconnects, slots_skipped and used_fallback, the processing
+     * thread owns the rest. A reader may therefore catch a slightly mixed
+     * snapshot, which is what monitoring counters are.
+     */
+    idx_pipeline_stats stats;
+
+    /* Processing thread only. */
+    idx_arena arena;
+    double last_save;
     bool save_warned;
+    uint64_t next_seq; /* the ring sequence expected next */
 };
 
 static double monotonic_seconds(void) {
@@ -124,23 +153,10 @@ idx_status idx_pipeline_read_slot_notification(idx_json_val result,
     return IDX_OK;
 }
 
-/* -------------------------------------------------------------- bookkeeping -- */
+/* --------------------------------------------------- shared, read-only state -- */
 
 static bool stop_requested(const idx_pipeline *pipeline) {
-    return pipeline->stop != 0;
-}
-
-/* True once the configured end slot has been reached, by either frontier: a
- * skipped end slot must still end the run. */
-static bool reached_end(const idx_pipeline *pipeline) {
-    idx_slot end = pipeline->options.config->end_slot;
-    if (end == 0) {
-        return false;
-    }
-    const idx_slot_cursor *cursor = pipeline->options.cursor;
-    return (cursor->last_indexed != IDX_SLOT_NONE &&
-            cursor->last_indexed >= end) ||
-           (cursor->last_seen != IDX_SLOT_NONE && cursor->last_seen >= end);
+    return pipeline->stop != 0 || pipeline->processor_failed != 0;
 }
 
 static bool above_end(const idx_pipeline *pipeline, idx_slot slot) {
@@ -148,9 +164,16 @@ static bool above_end(const idx_pipeline *pipeline, idx_slot slot) {
     return end != 0 && slot > end;
 }
 
+static bool at_or_above_end(const idx_pipeline *pipeline, idx_slot slot) {
+    idx_slot end = pipeline->options.config->end_slot;
+    return end != 0 && slot >= end;
+}
+
 static bool below_floor(const idx_pipeline *pipeline, idx_slot slot) {
     return pipeline->floor != 0 && slot < pipeline->floor;
 }
+
+/* --------------------------------------------------- the processing thread -- */
 
 static void observe_slot(idx_pipeline *pipeline, idx_slot slot) {
     idx_slot_cursor *cursor = pipeline->options.cursor;
@@ -160,7 +183,7 @@ static void observe_slot(idx_pipeline *pipeline, idx_slot slot) {
         /* Counted so the hole is at least visible. Fetching it is the gap
          * item in M4 and is not implemented yet. */
         pipeline->stats.slots_missed += slot - previous - 1;
-        IDX_DEBUG("gap: slots %llu..%llu were not delivered",
+        IDX_DEBUG("gap: slots %llu..%llu never reached the pipeline",
                   (unsigned long long)(previous + 1),
                   (unsigned long long)(slot - 1));
     }
@@ -223,6 +246,94 @@ static idx_status commit_block(idx_pipeline *pipeline,
     return IDX_OK;
 }
 
+/*
+ * The other half of the pipeline. Owns the slot cursor and the arena, and
+ * never touches the socket; everything it sees arrived through the ring.
+ */
+static void *run_processor(void *argument) {
+    idx_pipeline *pipeline = (idx_pipeline *)argument;
+    idx_status status = IDX_OK;
+
+    for (;;) {
+        idx_ring_entry entry;
+        idx_status code = idx_ring_consume(pipeline->ring, 200, &entry, NULL);
+
+        if (code == IDX_ERR_CLOSED) {
+            break; /* the receive thread stopped and the ring is drained */
+        }
+        if (code != IDX_OK) {
+            continue; /* timeout: nothing queued */
+        }
+
+        /*
+         * The sequence is dense at the producer, so any jump is the ring
+         * having dropped entries under pressure. The slots themselves are the
+         * gap; observe_slot below reports it from the discontinuity.
+         */
+        if (entry.seq != pipeline->next_seq) {
+            pipeline->stats.queue_dropped += entry.seq - pipeline->next_seq;
+        }
+        pipeline->next_seq = entry.seq + 1;
+
+        observe_slot(pipeline, entry.slot);
+
+        idx_raw_block block;
+        block.slot = entry.slot;
+        block.value = entry.value;
+        block.bytes = entry.bytes;
+        block.origin = (idx_block_origin)entry.tag;
+        block.arena = &pipeline->arena;
+
+        status = commit_block(pipeline, &block, &pipeline->processor_err);
+        idx_ring_release(pipeline->ring, &entry);
+
+        if (status != IDX_OK) {
+            break;
+        }
+    }
+
+    if (status != IDX_OK) {
+        pipeline->processor_status = status;
+        /* Tell the receive loop before it publishes anything else, and make
+         * its next publish fail rather than pile up work nobody will take. */
+        pipeline->processor_failed = 1;
+        idx_ring_close(pipeline->ring);
+    }
+
+    /* The cursor is this thread's, so this is the only place it can be
+     * persisted for the last time. */
+    save_cursor(pipeline, true);
+    return NULL;
+}
+
+static idx_status start_processor(idx_pipeline *pipeline, idx_error *err) {
+    /*
+     * Signals belong to the thread that installed the handler. Blocking them
+     * here means a SIGINT always interrupts the receive loop's poll rather
+     * than landing on a thread that cannot act on it.
+     */
+    sigset_t blocked;
+    sigset_t previous;
+    sigemptyset(&blocked);
+    sigaddset(&blocked, SIGINT);
+    sigaddset(&blocked, SIGTERM);
+    pthread_sigmask(SIG_BLOCK, &blocked, &previous);
+
+    int failure = pthread_create(&pipeline->processor, NULL, run_processor,
+                                 pipeline);
+
+    pthread_sigmask(SIG_SETMASK, &previous, NULL);
+
+    if (failure != 0) {
+        return IDX_FAIL(err, IDX_ERR_INTERNAL,
+                        "cannot start the processing thread");
+    }
+    pipeline->processor_running = true;
+    return IDX_OK;
+}
+
+/* ------------------------------------------------------ the receive thread -- */
+
 static void note_reconnects(idx_pipeline *pipeline, const idx_pubsub *pubsub) {
     idx_pubsub_stats stats;
     idx_pubsub_get_stats(pubsub, &stats);
@@ -230,17 +341,10 @@ static void note_reconnects(idx_pipeline *pipeline, const idx_pubsub *pubsub) {
         return;
     }
     pipeline->stats.reconnects = stats.reconnects;
-
-    idx_slot seen = pipeline->options.cursor->last_seen;
-    if (seen == IDX_SLOT_NONE) {
-        IDX_WARN("reconnected before any slot arrived");
-    } else {
-        IDX_WARN("reconnected; slots after %llu were not delivered",
-                 (unsigned long long)seen);
-    }
+    /* Which slots were missed is the cursor's to say, and the cursor belongs
+     * to the other thread; it sees the hole when the stream resumes. */
+    IDX_WARN("reconnected; the slots missed while down need replaying");
 }
-
-/* ---------------------------------------------------------------- run loops -- */
 
 static idx_status open_subscription(idx_pipeline *pipeline, const char *method,
                                     const char *unsubscribe_method,
@@ -286,7 +390,7 @@ static idx_status run_subscription(idx_pipeline *pipeline, idx_error *err) {
              (unsigned long long)handle);
 
     idx_status status = IDX_OK;
-    while (!stop_requested(pipeline) && !reached_end(pipeline)) {
+    while (!stop_requested(pipeline)) {
         idx_pubsub_message message;
         idx_status code = idx_pubsub_poll(
             pubsub, pipeline->options.poll_timeout_ms, &message, err);
@@ -308,10 +412,6 @@ static idx_status run_subscription(idx_pipeline *pipeline, idx_error *err) {
         idx_error_clear(&read_err);
         idx_status read = idx_pipeline_read_block_notification(
             message.result, &slot, &block, &read_err);
-
-        if (slot != IDX_SLOT_NONE) {
-            observe_slot(pipeline, slot);
-        }
 
         if (read != IDX_OK) {
             if (read == IDX_ERR_NOT_FOUND) {
@@ -335,16 +435,28 @@ static idx_status run_subscription(idx_pipeline *pipeline, idx_error *err) {
             break;
         }
 
-        idx_raw_block raw;
-        raw.slot = slot;
-        raw.value = block;
-        raw.raw = message.raw;
-        raw.origin = IDX_BLOCK_FROM_SUBSCRIPTION;
-        raw.arena = &pipeline->arena;
+        /*
+         * The document goes over to the other thread whole. It is a
+         * self-contained parse, so nothing it points at belongs to the
+         * connection, and handing it over saves both a copy and a second
+         * parse (decision D6).
+         */
+        idx_ring_entry entry;
+        memset(&entry, 0, sizeof(entry));
+        entry.slot = slot;
+        entry.doc = message.doc;
+        entry.value = block;
+        entry.tag = (uint64_t)IDX_BLOCK_FROM_SUBSCRIPTION;
+        entry.bytes = message.raw.len;
 
-        status = commit_block(pipeline, &raw, err);
+        message.doc = NULL; /* ownership moves to the ring */
         idx_pubsub_message_free(&message);
+
+        status = idx_ring_publish(pipeline->ring, &entry, err);
         if (status != IDX_OK) {
+            break;
+        }
+        if (at_or_above_end(pipeline, slot)) {
             break;
         }
     }
@@ -394,7 +506,7 @@ static idx_status run_fallback(idx_pipeline *pipeline, idx_error *err) {
     block_options.commitment = cfg->commitment;
     block_options.transaction_details = idx_tx_details_name(cfg->tx_details);
 
-    while (!stop_requested(pipeline) && !reached_end(pipeline)) {
+    while (!stop_requested(pipeline)) {
         idx_pubsub_message message;
         idx_status code = idx_pubsub_poll(
             pubsub, pipeline->options.poll_timeout_ms, &message, err);
@@ -422,7 +534,6 @@ static idx_status run_fallback(idx_pipeline *pipeline, idx_error *err) {
             continue;
         }
 
-        observe_slot(pipeline, slot);
         if (below_floor(pipeline, slot)) {
             continue;
         }
@@ -444,22 +555,27 @@ static idx_status run_fallback(idx_pipeline *pipeline, idx_error *err) {
         if (fetched != IDX_OK) {
             /* One block the recovery path could not recover. It is a hole
              * like any other, and the gap item in M4 is what will fill it. */
-            pipeline->stats.slots_missed++;
             IDX_WARN("getBlock(%llu): %s", (unsigned long long)slot,
                      fetch_err.message);
             continue;
         }
 
-        idx_raw_block raw;
-        raw.slot = slot;
-        raw.value = response.result;
-        raw.raw = idx_slice_make(NULL, 0);
-        raw.origin = IDX_BLOCK_FROM_RPC;
-        raw.arena = &pipeline->arena;
+        idx_ring_entry entry;
+        memset(&entry, 0, sizeof(entry));
+        entry.slot = slot;
+        entry.doc = response.doc;
+        entry.value = response.result;
+        entry.tag = (uint64_t)IDX_BLOCK_FROM_RPC;
+        entry.bytes = 0; /* the RPC client accounts for its own transfer */
 
-        status = commit_block(pipeline, &raw, err);
+        response.doc = NULL; /* ownership moves to the ring */
         idx_rpc_response_free(&response);
+
+        status = idx_ring_publish(pipeline->ring, &entry, err);
         if (status != IDX_OK) {
+            break;
+        }
+        if (at_or_above_end(pipeline, slot)) {
             break;
         }
     }
@@ -507,12 +623,24 @@ idx_status idx_pipeline_open(const idx_pipeline_options *options,
     if (pipeline->options.save_interval_ms == 0) {
         pipeline->options.save_interval_ms = IDX_PIPELINE_SAVE_INTERVAL_MS;
     }
+    idx_error_clear(&pipeline->processor_err);
 
     /* Built here rather than per connection, so a subscription shape the
      * configuration cannot express fails before anything is opened. */
     idx_status status = idx_config_block_subscribe_params(
         options->config, pipeline->subscribe_params,
         sizeof(pipeline->subscribe_params), err);
+    if (status != IDX_OK) {
+        free(pipeline);
+        return status;
+    }
+
+    idx_ring_options ring_options;
+    idx_ring_options_init(&ring_options);
+    if (options->config->queue_depth != 0) {
+        ring_options.depth = options->config->queue_depth;
+    }
+    status = idx_ring_new(&ring_options, &pipeline->ring, err);
     if (status != IDX_OK) {
         free(pipeline);
         return status;
@@ -529,6 +657,7 @@ void idx_pipeline_close(idx_pipeline *pipeline) {
     if (pipeline == NULL) {
         return;
     }
+    idx_ring_free(pipeline->ring);
     idx_arena_destroy(&pipeline->arena);
     free(pipeline);
 }
@@ -545,6 +674,13 @@ void idx_pipeline_get_stats(const idx_pipeline *pipeline,
         return;
     }
     *out = pipeline->stats;
+
+    idx_ring_stats ring;
+    memset(&ring, 0, sizeof(ring));
+    idx_ring_get_stats(pipeline->ring, &ring);
+    out->queue_dropped = ring.dropped;
+    out->queue_high_water = ring.high_water;
+    out->queue_depth = ring.depth;
 }
 
 idx_status idx_pipeline_run(idx_pipeline *pipeline, idx_error *err) {
@@ -569,6 +705,8 @@ idx_status idx_pipeline_run(idx_pipeline *pipeline, idx_error *err) {
                  (unsigned long long)pipeline->floor);
     }
 
+    IDX_TRY(start_processor(pipeline, err));
+
     idx_status status = run_subscription(pipeline, err);
 
     if (status == IDX_ERR_REMOTE && pipeline->options.allow_fallback &&
@@ -580,6 +718,18 @@ idx_status idx_pipeline_run(idx_pipeline *pipeline, idx_error *err) {
         status = run_fallback(pipeline, err);
     }
 
-    save_cursor(pipeline, true);
+    /* Stop feeding, then let the far side finish what is already queued. It
+     * persists the cursor on its way out. */
+    idx_ring_close(pipeline->ring);
+    pthread_join(pipeline->processor, NULL);
+    pipeline->processor_running = false;
+
+    /* A handler that failed is the more useful thing to report. */
+    if (pipeline->processor_status != IDX_OK) {
+        if (err != NULL) {
+            *err = pipeline->processor_err;
+        }
+        return pipeline->processor_status;
+    }
     return status;
 }

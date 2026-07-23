@@ -366,21 +366,29 @@ sends the older slots — the ones most likely to still be served, and least
 likely to be needed live — down a recovery path that already exists and can run
 concurrently. Total lag is lower and the recovered work is the cheaper half.
 
-### Descriptors and a buffer pool, not payloads in the ring
+### The parsed document is what crosses, by ownership
 
-Blocks are 5 to 11 MiB, so a ring that holds payloads inline costs depth times
-peak block size and copies every byte twice. The ring holds `{slot, buffer,
-length}` and the payload stays where the receive thread reassembled it, which
-is the split Firedancer makes between its metadata cache and its data cache.
-Ring depth becomes a memory decision — depth times the message cap — and is
-configurable rather than compiled in.
+This was first written as a pool of payload buffers with the descriptors
+pointing into it, mirroring Firedancer's split between its metadata cache and
+its data cache. Implementing it showed the premise was wrong. `idx_pubsub` has
+to parse each notification anyway, to read the subscription id and demultiplex
+it, and it does so with the copying parse — so by the time the receive thread
+has a slot number it is already holding a self-contained `idx_json_doc` that
+owes the connection nothing.
 
-Firedancer lets a consumer read a payload speculatively and re-check the
-sequence number afterwards to find out whether it was overwritten mid-read,
-which removes buffer ownership entirely. That trade does not carry: redoing a
-10 MiB parse costs far more than coordinating ownership at 2.5 handoffs per
-second. The receive thread writes only into buffers the processing thread has
-released, and "no free buffer" is what triggers the overflow policy above.
+Copying the payload into a pool and parsing it again on the far side would
+therefore have been one copy and two parses of the same 5 to 11 MiB. The ring
+carries the document instead, transferring ownership, and the receive thread
+also passes the node it already located inside it. No copy, no second parse.
+
+Ring depth stays a memory decision — a parsed block is tens of megabytes and
+the ring may hold `depth` of them — and is configurable through
+`queue_depth` rather than compiled in.
+
+Firedancer cannot do this. Its payloads arrive as raw frames in a shared
+memory region with no per-message ownership to hand over, which is what makes
+its speculative read-then-recheck necessary in the first place. The difference
+is that a parse already happened here, one layer down.
 
 ### Two threads, and not more
 
@@ -412,10 +420,17 @@ measurement behind it, not now.
   overflow policy gets a unit test with a synthetic producer — which matters,
   because the rate-limited demo endpoint delivers well under what the chain
   produces and will never overflow anything.
-- **Publication uses C11 atomics**, a release store on the entry's sequence
-  paired with an acquire load. Firedancer's AVX-atomic stores and double
-  cache-line padding buy nothing at these rates and would tie the project to
-  x86-64, which is why that client supports only x86-64 in the first place.
+- **The ring is guarded by a mutex and a condition variable**, not by lock-free
+  publication. This was first written the other way — a release store on the
+  entry's sequence, paired with an acquire load — and the reason it is not is
+  that dropping the oldest entry means the producer moves the consumer's read
+  position, which single-writer-per-variable publication cannot express without
+  a compare-and-swap. At 2.5 hand-offs per second, against critical sections of
+  a few pointer moves that never contain I/O, the lock costs nothing measurable
+  and the accounting is far easier to be sure of. What is deliberately not
+  taken from Firedancer is its AVX-atomic stores and double cache-line padding:
+  those buy nothing at these rates and would tie the project to x86-64, which
+  is why that client supports only x86-64 in the first place.
 
 ### Not taken from Firedancer
 

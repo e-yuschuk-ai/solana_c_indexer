@@ -44,7 +44,7 @@ static idx_status count_block(const idx_raw_block *block, void *user,
 
     IDX_DEBUG("slot %llu: %zu transactions, %.2f MiB from %s",
               (unsigned long long)block->slot, count,
-              (double)block->raw.len / (1024.0 * 1024.0),
+              (double)block->bytes / (1024.0 * 1024.0),
               idx_block_origin_name(block->origin));
     return IDX_OK;
 }
@@ -121,6 +121,9 @@ int main(int argc, char **argv) {
              (unsigned long long)stats.slots_missed,
              (unsigned long long)stats.reconnects,
              (double)stats.bytes / (1024.0 * 1024.0));
+    IDX_INFO("queue: dropped=%llu high_water=%zu of %zu",
+             (unsigned long long)stats.queue_dropped, stats.queue_high_water,
+             stats.queue_depth);
     if (stats.last_indexed != IDX_SLOT_NONE) {
         IDX_INFO("last indexed slot %llu",
                  (unsigned long long)stats.last_indexed);

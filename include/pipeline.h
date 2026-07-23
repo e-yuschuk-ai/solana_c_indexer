@@ -6,18 +6,26 @@
  * pipeline falls back to `slotSubscribe` plus `getBlock` over HTTP. Either way
  * the consumer sees the same thing: one call per block, in slot order.
  *
- * The pipeline owns the position on the chain. It observes every notified slot
- * on the cursor, and advances the indexed frontier only once the handler has
- * accepted the block, so a restart resumes at the first slot that was never
- * committed rather than at the last one that arrived.
+ * Two threads (decision D6). idx_pipeline_run keeps the receive loop on the
+ * calling thread and starts a second one to process; a bounded ring sits
+ * between them, and a receive loop that would have to wait drops its oldest
+ * queued block instead. The socket is never made to wait for the handler.
  *
- * What it does not do yet: the bounded queue between the receive loop and the
- * consumer, and the fetching of gaps the socket missed. Both are M4 items still
- * open. Today the handler runs inline on the receive loop, which is fine while
- * it is cheap and is exactly what the queue exists to fix once it is not.
+ * The handler therefore runs on the processing thread, not the caller's. It is
+ * the only thing that touches the slot cursor, which is what keeps the two
+ * threads from sharing any mutable state at all.
  *
- * Not thread-safe; one owner per instance. The single exception is
- * idx_pipeline_request_stop, which a signal handler may call.
+ * The pipeline owns the position on the chain. It observes every slot that
+ * reaches the processing thread, and advances the indexed frontier only once
+ * the handler has accepted the block, so a restart resumes at the first slot
+ * that was never committed rather than at the last one that arrived.
+ *
+ * What it does not do yet: fetching the gaps, whether the socket missed them or
+ * the ring dropped them. That is an M4 item still open; for now they are
+ * counted and logged.
+ *
+ * One owner per instance. idx_pipeline_request_stop may additionally be called
+ * from a signal handler, and idx_pipeline_get_stats from a monitoring thread.
  */
 #ifndef IDX_PIPELINE_H
 #define IDX_PIPELINE_H
@@ -55,9 +63,10 @@ typedef struct {
     /* The block object: blockhash, parentSlot, transactions, blockTime. */
     idx_json_val value;
 
-    /* The undecoded payload. Empty on the RPC path, which hands back a parsed
-     * document rather than the bytes it came from. */
-    idx_slice raw;
+    /* Size of the payload this was parsed from. The bytes themselves are gone
+     * — only the parsed document crosses between the threads — and this is 0
+     * on the RPC path, where the transfer is the RPC client's to account for. */
+    size_t bytes;
 
     idx_block_origin origin;
 
@@ -66,10 +75,10 @@ typedef struct {
 } idx_raw_block;
 
 /*
- * Called once per block. Returning IDX_OK means the block is committed, and is
- * what advances the indexed frontier; returning anything else stops the
- * pipeline and is reported from idx_pipeline_run, leaving the cursor pointing
- * at the block that failed so a restart retries it.
+ * Called once per block, on the processing thread. Returning IDX_OK means the
+ * block is committed, and is what advances the indexed frontier; returning
+ * anything else stops the pipeline and is reported from idx_pipeline_run,
+ * leaving the cursor pointing at the block that failed so a restart retries it.
  */
 typedef idx_status (*idx_block_handler)(const idx_raw_block *block, void *user,
                                         idx_error *err);
@@ -110,6 +119,13 @@ typedef struct {
      * client's to account for. */
     uint64_t bytes;
     uint64_t reconnects;
+
+    /* Blocks the ring dropped because the processing thread was behind. Each
+     * one is a slot to refetch, not lost data (decision D6). */
+    uint64_t queue_dropped;
+    size_t queue_high_water; /* deepest the ring has been */
+    size_t queue_depth;      /* what the ring was sized for */
+
     idx_slot last_indexed;   /* IDX_SLOT_NONE until the first commit */
     bool used_fallback;
 } idx_pipeline_stats;
@@ -125,8 +141,9 @@ idx_status idx_pipeline_open(const idx_pipeline_options *options,
 void idx_pipeline_close(idx_pipeline *pipeline);
 
 /*
- * Follows the tip until a stop is requested, the configured end slot is
- * reached, or something fails.
+ * Starts the processing thread and follows the tip on the calling thread until
+ * a stop is requested, the configured end slot is reached, or something fails.
+ * Returns only once the processing thread has drained what was queued.
  *
  *   IDX_OK          stopped cleanly
  *   IDX_ERR_REMOTE  the endpoint rejected the subscription and no fallback was
@@ -144,6 +161,11 @@ idx_status idx_pipeline_run(idx_pipeline *pipeline, idx_error *err);
  */
 void idx_pipeline_request_stop(idx_pipeline *pipeline);
 
+/*
+ * A monitoring snapshot. Each counter has a single writer, but the two threads
+ * write different ones, so a reader may catch a slightly mixed picture. That is
+ * what these are for; nothing decides anything on them.
+ */
 void idx_pipeline_get_stats(const idx_pipeline *pipeline,
                             idx_pipeline_stats *out);
 

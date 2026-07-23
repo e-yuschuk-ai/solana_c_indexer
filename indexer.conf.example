@@ -30,6 +30,14 @@ end_slot = 0
 # Environment: INDEXER_CONCURRENCY   Flag: --concurrency
 concurrency = 4
 
+# Blocks that may sit between the receive thread and the processing thread
+# (decision D6). The ring never makes the socket wait: when it is full it drops
+# its oldest block and the slot is refetched over HTTP instead. Deeper rides out
+# a longer stall downstream at the cost of memory — a parsed block is tens of
+# megabytes and the ring may hold this many. 0 uses the default of 8.
+# Environment: INDEXER_QUEUE_DEPTH   Flag: --queue-depth
+# queue_depth = 8
+
 # Commitment level: confirmed (default, ~1 slot behind) or finalized
 # (~13 slots behind but never reorged).
 # Environment: INDEXER_COMMITMENT   Flag: --commitment
