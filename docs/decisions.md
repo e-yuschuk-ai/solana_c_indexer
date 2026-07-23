@@ -312,3 +312,122 @@ trades rather than decoded from anything.
 M5 as written stops at generic instruction decoding. The domain layer —
 per-program decoders plus the derivation of bars — needs its own milestone
 between decoding and storage, and its scope depends on which venues matter.
+
+---
+
+## D6 — Two threads, a bounded ring, and no backpressure on the socket
+
+**Status:** accepted · **Affects:** M4, M7, M8
+
+Follow mode runs the consumer inline on the receive loop. That is fine while
+the consumer counts transactions, and stops being fine the moment M7 puts a
+network round trip to PostgreSQL behind it: a consumer that blocks blocks the
+socket read, TCP backpressure builds, and the provider drops the connection —
+the failure D1a named as a design constraint rather than a refinement.
+
+**Decision.** Two threads. A receive thread owns the socket and does nothing
+but reassemble notifications and publish them. A processing thread decodes,
+derives and writes. Between them sits a bounded ring of fixed-size descriptors
+pointing into a pool of payload buffers. When the ring is full the receive
+thread overwrites the oldest entry rather than waiting; the processing thread
+notices the slot discontinuity and hands that range to the gap fetcher. The
+socket is never made to wait for anything downstream.
+
+The model is taken from Firedancer's `tango` layer
+([firedancer-io/firedancer](https://github.com/firedancer-io/firedancer),
+`src/tango/`), which is worth reading before changing any of this.
+
+### Why an overrun is cheap here and expensive there
+
+Firedancer's ring carries a global sequence number per fragment, and a consumer
+that sees a gap in it knows it was overrun (`src/tango/fd_tango_base.h`). Its
+flow control header is blunt about which side to prefer:
+
+> backpressure is the worst thing in the world for a large scale distributed
+> system [...] limit the number of strictly reliable consumers needed in the
+> system to, ideally, zero. (`src/tango/fctl/fd_fctl.h`)
+
+A validator pays for that with real data loss: a dropped shred is gone. The
+indexer does not. Every slot the ring drops is recoverable with `getBlock` over
+the HTTP path M3 already built, so an overrun costs a refetch, not data. The
+argument for the unreliable-consumer model is therefore stronger here than in
+the system it comes from.
+
+Nothing new is needed to detect it. Slot numbers are already the sequence, and
+the gap check the pipeline performs between consecutive slots already reports
+exactly the range that was dropped.
+
+### Overwrite the oldest, not the newest
+
+Both keep the socket moving; they differ in where the survivor sits. Dropping
+the newest keeps a stale window and pushes the indexer further behind the tip
+with every overflow. Overwriting the oldest keeps the indexer near the tip and
+sends the older slots — the ones most likely to still be served, and least
+likely to be needed live — down a recovery path that already exists and can run
+concurrently. Total lag is lower and the recovered work is the cheaper half.
+
+### Descriptors and a buffer pool, not payloads in the ring
+
+Blocks are 5 to 11 MiB, so a ring that holds payloads inline costs depth times
+peak block size and copies every byte twice. The ring holds `{slot, buffer,
+length}` and the payload stays where the receive thread reassembled it, which
+is the split Firedancer makes between its metadata cache and its data cache.
+Ring depth becomes a memory decision — depth times the message cap — and is
+configurable rather than compiled in.
+
+Firedancer lets a consumer read a payload speculatively and re-check the
+sequence number afterwards to find out whether it was overwritten mid-read,
+which removes buffer ownership entirely. That trade does not carry: redoing a
+10 MiB parse costs far more than coordinating ownership at 2.5 handoffs per
+second. The receive thread writes only into buffers the processing thread has
+released, and "no free buffer" is what triggers the overflow policy above.
+
+### Two threads, and not more
+
+Decoding is not the constraint. D2 measured the parser at ~1878 MiB/s against a
+requirement of ~12 MiB/s, and a live run against the demo endpoint saw the
+release build only 36% ahead of an ASan debug build — if compute were binding,
+that gap would be far wider. What can block is storage, and that is one
+consumer. A third thread, or a pool of them, is a decision for M7 with a
+measurement behind it, not now.
+
+### Consequences
+
+- **The ring is a liveness mechanism, not a throughput one.** It exists so a
+  slow writer cannot cost the connection. Sizing, observability and correct
+  behaviour under overflow matter; shaving nanoseconds off a handoff does not.
+- **Ownership is the concurrency design.** `idx_ws` and `idx_pubsub` are
+  documented as single-owner and belong to the receive thread. The slot cursor
+  belongs to the processing thread, which observes slots as it dequeues them,
+  so no field of it is written by two threads. `last_seen` therefore comes to
+  mean the highest slot that entered the pipeline rather than the highest the
+  socket delivered, which is the more useful of the two for gap detection.
+- **Each thread gets its own arena**, as `docs/conventions.md` already
+  requires.
+- **Shutdown gains a drain step.** A stop request has to reach the receive
+  thread, close the ring, and let the processing thread finish what is queued
+  before the cursor is persisted. This is what the M4 shutdown item is waiting
+  on.
+- **The ring is testable without a socket.** It is fed directly, so the
+  overflow policy gets a unit test with a synthetic producer — which matters,
+  because the rate-limited demo endpoint delivers well under what the chain
+  produces and will never overflow anything.
+- **Publication uses C11 atomics**, a release store on the entry's sequence
+  paired with an acquire load. Firedancer's AVX-atomic stores and double
+  cache-line padding buy nothing at these rates and would tie the project to
+  x86-64, which is why that client supports only x86-64 in the first place.
+
+### Not taken from Firedancer
+
+Its shared-memory workspaces, NUMA placement and huge pages exist for
+inter-process messaging; the indexer is one process. Tiles as sandboxed
+processes answer a threat model about validator keys that does not apply here.
+Busy-polling on a tick counter burns a core to save microseconds this workload
+does not need to save. Fragment reassembly with origin ids and start/end
+markers is solved a layer below by libcurl.
+
+**Revisit if** storage turns out to need more than one consumer, in which case
+the ring grows from single-consumer to multi-consumer and the sequencing has to
+carry per-consumer positions; or if the ring is observed to overflow against a
+paid endpoint, which would mean the pipeline is genuinely undersized rather
+than merely protected.

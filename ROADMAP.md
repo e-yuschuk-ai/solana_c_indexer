@@ -72,9 +72,10 @@ handling is a requirement rather than a refinement.
 - [x] Follow mode driven by `blockSubscribe` notifications, falling back to
       `slotSubscribe` + `getBlock` where the endpoint does not offer it
 - [ ] Bounded queue between the receive loop and the decoders, so a slow
-      consumer never stalls the socket read
+      consumer never stalls the socket read (decision D6)
 - [ ] Overflow policy: abandon the socket backlog and record the affected slot
       range as a gap rather than letting the provider drop the connection
+      (decision D6)
 - [ ] Gap detection: any distance between the cursor and a notified slot is a
       hole, whatever caused it
 - [ ] Gap and backfill fetching over HTTP with configurable concurrency
