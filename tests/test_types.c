@@ -20,6 +20,8 @@ static void test_well_known_program_ids(void) {
          "token"},
         {&IDX_PROGRAM_TOKEN_2022, "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
          "token-2022"},
+        {&IDX_PROGRAM_VOTE, "Vote111111111111111111111111111111111111111",
+         "vote"},
         {&IDX_PROGRAM_MEMO, "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
          "memo"},
     };

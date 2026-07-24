@@ -133,7 +133,11 @@ D5 fixes the scope: the indexer feeds a trading terminal, so it derives
 balances, transfers, swaps and bars, and it derives them only from what the
 block stream carried — nothing is fetched from a node to complete a record.
 
-- [ ] Vote transaction filter: recognised and dropped before any extraction
+- [x] Vote transaction filter: recognised and dropped before any extraction —
+      a transaction counts as a vote only when every top-level instruction
+      invokes the Vote program. Missing one costs storage, mistaking anything
+      else for one loses an event the block no longer holds, so the rule errs
+      in the direction that is recoverable
 - [ ] SOL balance state per account, from `meta.pre/postBalances`
 - [ ] Token balance state per token account, from `meta.pre/postTokenBalances`,
       carrying mint, owner and decimals

@@ -10,6 +10,7 @@
 #include "pipeline.h"
 #include "slot_cursor.h"
 #include "version.h"
+#include "vote_filter.h"
 
 /*
  * The signal handler needs a way to reach the pipeline, and a signal handler
@@ -29,16 +30,22 @@ static double monotonic_seconds(void) {
     return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
 }
 
+/* What the consumer stub accumulates across the run. */
+typedef struct {
+    uint64_t transactions; /* what survived the vote filter */
+    uint64_t votes;        /* what it dropped */
+} idx_tally;
+
 /*
  * Consumer stub. Storing decoded transactions is M7; until then the handler
- * decodes the block (M5) and tallies what it found, which both proves the
- * decoder against live data and is what advances the cursor. A decode failure
- * stops the pipeline, leaving the cursor on the offending slot — the strict
- * choice that surfaces bugs while the decoder is being built out.
+ * decodes the block (M5), drops votes (M6) and tallies what is left, which
+ * both proves the decoder against live data and is what advances the cursor. A
+ * decode failure stops the pipeline, leaving the cursor on the offending slot
+ * — the strict choice that surfaces bugs while the decoder is being built out.
  */
 static idx_status count_block(const idx_raw_block *block, void *user,
                               idx_error *err) {
-    uint64_t *transactions = (uint64_t *)user;
+    idx_tally *tally = (idx_tally *)user;
 
     idx_block decoded;
     idx_status status =
@@ -49,7 +56,6 @@ static idx_status count_block(const idx_raw_block *block, void *user,
                  (err != NULL) ? err->message : "");
         return status;
     }
-    *transactions += decoded.transaction_count;
 
     size_t instructions = 0;
     size_t inner = 0;
@@ -57,8 +63,13 @@ static idx_status count_block(const idx_raw_block *block, void *user,
     uint64_t fees = 0;
     size_t token_balances = 0;
     size_t logs = 0;
+    size_t votes = 0;
     for (size_t i = 0; i < decoded.transaction_count; i++) {
         const idx_transaction *tx = &decoded.transactions[i];
+        if (idx_vote_filter_should_drop(tx)) {
+            votes++;
+            continue;
+        }
         instructions += tx->instruction_count;
         for (size_t j = 0; j < tx->inner_instruction_count; j++) {
             inner += tx->inner_instructions[j].instruction_count;
@@ -72,10 +83,14 @@ static idx_status count_block(const idx_raw_block *block, void *user,
         logs += tx->log_count;
     }
 
-    IDX_DEBUG("slot %llu: %zu txns (%zu v0), %zu ix, %zu inner, %llu lamports "
-              "fees, %zu token balances, %zu logs, %.2f MiB from %s",
+    tally->transactions += decoded.transaction_count - votes;
+    tally->votes += votes;
+
+    IDX_DEBUG("slot %llu: %zu txns (%zu votes dropped, %zu v0), %zu ix, "
+              "%zu inner, %llu lamports fees, %zu token balances, %zu logs, "
+              "%.2f MiB from %s",
               (unsigned long long)block->slot, decoded.transaction_count,
-              versioned, instructions, inner, (unsigned long long)fees,
+              votes, versioned, instructions, inner, (unsigned long long)fees,
               token_balances, logs,
               (double)block->bytes / (1024.0 * 1024.0),
               idx_block_origin_name(block->origin));
@@ -117,14 +132,14 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    uint64_t transactions = 0;
+    idx_tally tally = {0, 0};
 
     idx_pipeline_options options;
     idx_pipeline_options_init(&options);
     options.config = &cfg;
     options.cursor = &cursor;
     options.handler = count_block;
-    options.user = &transactions;
+    options.user = &tally;
 
     idx_pipeline *pipeline = NULL;
     if (idx_pipeline_open(&options, &pipeline, &err) != IDX_OK) {
@@ -145,9 +160,11 @@ int main(int argc, char **argv) {
     idx_pipeline_stats stats;
     idx_pipeline_get_stats(pipeline, &stats);
 
-    IDX_INFO("indexed %llu blocks (%llu transactions) in %.1f s, %.2f blocks/s",
+    IDX_INFO("indexed %llu blocks (%llu transactions, %llu votes dropped) in "
+             "%.1f s, %.2f blocks/s",
              (unsigned long long)stats.blocks,
-             (unsigned long long)transactions, elapsed,
+             (unsigned long long)tally.transactions,
+             (unsigned long long)tally.votes, elapsed,
              (elapsed > 0.0) ? (double)stats.blocks / elapsed : 0.0);
     IDX_INFO("skipped=%llu missed=%llu reconnects=%llu socket=%.1f MiB",
              (unsigned long long)stats.slots_skipped,

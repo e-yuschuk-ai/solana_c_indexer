@@ -81,6 +81,7 @@ bool idx_hash_equal(const idx_hash *a, const idx_hash *b);
 extern const idx_pubkey IDX_PROGRAM_SYSTEM;
 extern const idx_pubkey IDX_PROGRAM_TOKEN;
 extern const idx_pubkey IDX_PROGRAM_TOKEN_2022;
+extern const idx_pubkey IDX_PROGRAM_VOTE;
 extern const idx_pubkey IDX_PROGRAM_MEMO;
 
 #endif /* IDX_TYPES_H */
