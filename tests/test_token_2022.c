@@ -257,7 +257,7 @@ static void test_extension_groups(void) {
      * transfer consumer will want first. */
     payload fee = {{0}, 0};
     put_u8(&fee, IDX_TOKEN_2022_IX_TRANSFER_FEE_EXTENSION);
-    put_u8(&fee, 1);
+    put_u8(&fee, IDX_TOKEN_2022_FEE_IX_TRANSFER_CHECKED_WITH_FEE);
     put_u64(&fee, 1000);
     put_u8(&fee, 6);
     put_u64(&fee, 25);
@@ -292,6 +292,55 @@ static void test_extension_groups(void) {
     put_u8(&bare, IDX_TOKEN_2022_IX_PAUSABLE_EXTENSION);
     ix = make_ix(INDICES, 1, &bare);
     TEST_EQ_INT(decode(&f, &ix, &decoded), IDX_ERR_RANGE);
+}
+
+/*
+ * The one extension payload decoded here, because the transfer extraction in
+ * M6 needs it: a mint that charges a fee moves its tokens through this and not
+ * through TransferChecked.
+ */
+static void test_transfer_with_fee_payload(void) {
+    fixture f;
+    fixture_init(&f);
+    idx_token_2022_instruction decoded;
+
+    payload data = {{0}, 0};
+    put_u8(&data, IDX_TOKEN_2022_IX_TRANSFER_FEE_EXTENSION);
+    put_u8(&data, IDX_TOKEN_2022_FEE_IX_TRANSFER_CHECKED_WITH_FEE);
+    put_u64(&data, 1000);
+    put_u8(&data, 6);
+    put_u64(&data, 25);
+    idx_instruction ix = make_ix(INDICES, 4, &data);
+    TEST_EQ_INT(decode(&f, &ix, &decoded), IDX_OK);
+
+    idx_error err;
+    idx_error_clear(&err);
+    idx_token_2022_transfer_with_fee transfer;
+    TEST_EQ_INT(idx_token_2022_transfer_with_fee_decode(
+                    &f.tx, &ix, decoded.extension.payload, &transfer, &err),
+                IDX_OK);
+    /* The same four operands as TransferChecked, in the same order. */
+    TEST_ASSERT(is_account(transfer.source, 1));
+    TEST_ASSERT(is_account(transfer.mint, 2));
+    TEST_ASSERT(is_account(transfer.destination, 3));
+    TEST_ASSERT(is_account(transfer.authority, 4));
+    TEST_EQ_UINT(transfer.amount, 1000);
+    TEST_EQ_UINT(transfer.decimals, 6);
+    TEST_EQ_UINT(transfer.fee, 25);
+
+    /* The fee is the last field, so a payload one byte short still has an
+     * amount and a scale, and is still not a transfer this can report. */
+    idx_slice truncated = idx_slice_sub(decoded.extension.payload, 0, 16);
+    TEST_EQ_INT(idx_token_2022_transfer_with_fee_decode(&f.tx, &ix, truncated,
+                                                        &transfer, &err),
+                IDX_ERR_RANGE);
+
+    idx_instruction short_accounts = make_ix(INDICES, 3, &data);
+    TEST_EQ_INT(
+        idx_token_2022_transfer_with_fee_decode(&f.tx, &short_accounts,
+                                                decoded.extension.payload,
+                                                &transfer, &err),
+        IDX_ERR_PARSE);
 }
 
 static void test_errors(void) {
@@ -365,6 +414,7 @@ TEST_MAIN({
     TEST_RUN(test_mint_variants);
     TEST_RUN(test_reallocate);
     TEST_RUN(test_extension_groups);
+    TEST_RUN(test_transfer_with_fee_payload);
     TEST_RUN(test_errors);
     TEST_RUN(test_names_and_classification);
 })

@@ -86,6 +86,38 @@ uint16_t idx_token_2022_extension_type_at(idx_slice extension_types,
                       (uint16_t)(extension_types.data[offset + 1] << 8));
 }
 
+idx_status idx_token_2022_transfer_with_fee_decode(
+    const idx_transaction *tx, const idx_instruction *ix, idx_slice payload,
+    idx_token_2022_transfer_with_fee *out, idx_error *err) {
+    if (tx == NULL || ix == NULL || out == NULL) {
+        return IDX_FAIL(err, IDX_ERR_INVALID_ARG,
+                        "tx, ix and out must not be NULL");
+    }
+    memset(out, 0, sizeof(*out));
+
+    /* The same four operands as TransferChecked, in the same order. */
+    static const char *const NAMES[] = {"source", "mint", "destination",
+                                        "authority"};
+    const idx_pubkey **operands[] = {&out->source, &out->mint,
+                                     &out->destination, &out->authority};
+    for (size_t i = 0; i < 4; i++) {
+        const idx_pubkey *account = idx_instruction_account(tx, ix, i);
+        if (account == NULL) {
+            return IDX_FAIL(err, IDX_ERR_PARSE,
+                            "TransferCheckedWithFee needs a %s at account %zu, "
+                            "instruction has %zu",
+                            NAMES[i], i, ix->account_count);
+        }
+        *operands[i] = account;
+    }
+
+    idx_cursor cursor;
+    idx_cursor_init(&cursor, payload);
+    IDX_TRY(idx_cursor_u64le(&cursor, &out->amount, err));
+    IDX_TRY(idx_cursor_u8(&cursor, &out->decimals, err));
+    return idx_cursor_u64le(&cursor, &out->fee, err);
+}
+
 /* Resolves a named operand, failing with the variant's name when the
  * instruction is short of accounts. */
 static idx_status require_account(const idx_transaction *tx,

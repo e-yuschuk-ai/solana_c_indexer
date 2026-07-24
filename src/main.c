@@ -11,6 +11,7 @@
 #include "log.h"
 #include "pipeline.h"
 #include "slot_cursor.h"
+#include "transfer.h"
 #include "version.h"
 #include "vote_filter.h"
 
@@ -39,10 +40,12 @@ static double monotonic_seconds(void) {
 
 /* What the consumer stub accumulates across the run. */
 typedef struct {
-    uint64_t transactions;   /* what survived the vote filter */
-    uint64_t votes;          /* what it dropped */
-    uint64_t sol_balances;   /* balance rows the survivors produced */
-    uint64_t token_balances; /* the same, per token account */
+    uint64_t transactions;    /* what survived the vote filter */
+    uint64_t votes;           /* what it dropped */
+    uint64_t sol_balances;    /* balance rows the survivors produced */
+    uint64_t token_balances;  /* the same, per token account */
+    uint64_t sol_transfers;   /* lamport movements from System instructions */
+    uint64_t token_transfers; /* token movements, mints and burns included */
 } idx_tally;
 
 /*
@@ -176,6 +179,8 @@ static idx_status count_block(const idx_raw_block *block, void *user,
     size_t logs = 0;
     size_t votes = 0;
     size_t sol_balances = 0;
+    size_t sol_transfers = 0;
+    size_t token_transfers = 0;
     for (size_t i = 0; i < decoded.transaction_count; i++) {
         const idx_transaction *tx = &decoded.transactions[i];
         if (idx_vote_filter_should_drop(tx)) {
@@ -209,6 +214,27 @@ static idx_status count_block(const idx_raw_block *block, void *user,
         }
         token_balances += token_state_count;
 
+        const idx_transfer *moves = NULL;
+        size_t move_count = 0;
+        status = idx_transfer_extract(tx, block->arena, &moves, &move_count,
+                                      err);
+        if (status != IDX_OK) {
+            IDX_WARN("slot %llu: transfer extraction failed: %s",
+                     (unsigned long long)block->slot,
+                     (err != NULL) ? err->message : "");
+            return status;
+        }
+        /* The two the storage tiers keep apart (D5), counted apart here so
+         * their volumes are visible against live data before M7 sizes for
+         * them. */
+        for (size_t j = 0; j < move_count; j++) {
+            if (moves[j].kind == IDX_TRANSFER_SOL) {
+                sol_transfers++;
+            } else {
+                token_transfers++;
+            }
+        }
+
         instructions += tx->instruction_count;
         for (size_t j = 0; j < tx->inner_instruction_count; j++) {
             inner += tx->inner_instructions[j].instruction_count;
@@ -224,15 +250,19 @@ static idx_status count_block(const idx_raw_block *block, void *user,
     tally->votes += votes;
     tally->sol_balances += sol_balances;
     tally->token_balances += token_balances;
+    tally->sol_transfers += sol_transfers;
+    tally->token_transfers += token_transfers;
 
     char lag[32];
     format_lag(lag, sizeof(lag), decoded.block_time, decoded.has_block_time);
     IDX_DEBUG("slot %llu: %zu txns (%zu votes dropped, %zu v0), %zu ix, "
               "%zu inner, %llu lamports fees, %zu sol balances, "
-              "%zu token balances, %zu logs, %.2f MiB from %s, lag %s",
+              "%zu token balances, %zu sol transfers, %zu token transfers, "
+              "%zu logs, %.2f MiB from %s, lag %s",
               (unsigned long long)block->slot, decoded.transaction_count,
               votes, versioned, instructions, inner, (unsigned long long)fees,
-              sol_balances, token_balances, logs,
+              sol_balances, token_balances, sol_transfers, token_transfers,
+              logs,
               (double)block->bytes / (1024.0 * 1024.0),
               idx_block_origin_name(block->origin), lag);
     return IDX_OK;
@@ -273,7 +303,7 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    idx_tally tally = {0, 0, 0, 0};
+    idx_tally tally = {0, 0, 0, 0, 0, 0};
 
     idx_pipeline_options options;
     idx_pipeline_options_init(&options);
@@ -323,12 +353,15 @@ int main(int argc, char **argv) {
     idx_pipeline_get_stats(pipeline, &stats);
 
     IDX_INFO("indexed %llu blocks (%llu transactions, %llu votes dropped, "
-             "%llu sol balances, %llu token balances) in %.1f s, %.2f blocks/s",
+             "%llu sol balances, %llu token balances, %llu sol transfers, "
+             "%llu token transfers) in %.1f s, %.2f blocks/s",
              (unsigned long long)stats.blocks,
              (unsigned long long)tally.transactions,
              (unsigned long long)tally.votes,
              (unsigned long long)tally.sol_balances,
-             (unsigned long long)tally.token_balances, elapsed,
+             (unsigned long long)tally.token_balances,
+             (unsigned long long)tally.sol_transfers,
+             (unsigned long long)tally.token_transfers, elapsed,
              (elapsed > 0.0) ? (double)stats.blocks / elapsed : 0.0);
     IDX_INFO("skipped=%llu missed=%llu reconnects=%llu socket=%.1f MiB",
              (unsigned long long)stats.slots_skipped,

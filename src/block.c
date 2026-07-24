@@ -371,11 +371,13 @@ static idx_status decode_signatures(idx_json_val transaction, idx_arena *arena,
  * and the fee it paid. */
 static idx_status decode_meta_summary(idx_json_val meta, idx_transaction *tx,
                                       idx_error *err) {
+    tx->has_meta = false;
     tx->success = true;
     tx->fee = 0;
     if (!idx_json_is_object(meta)) {
         return IDX_OK;
     }
+    tx->has_meta = true;
     idx_json_val error = idx_json_get(meta, "err");
     tx->success = !idx_json_is_present(error) || idx_json_is_null(error);
     (void)idx_json_opt_u64(meta, "fee", &tx->fee);

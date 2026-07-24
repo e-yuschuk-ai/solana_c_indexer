@@ -397,6 +397,7 @@ static void test_decode_metadata_sparse(void) {
         IDX_OK);
 
     const idx_transaction *tx = &block.transactions[0];
+    TEST_ASSERT(tx->has_meta);
     TEST_ASSERT(tx->success);
     TEST_EQ_UINT(tx->fee, 42u);
     TEST_EQ_UINT(tx->balance_count, 0u);
@@ -404,6 +405,19 @@ static void test_decode_metadata_sparse(void) {
     TEST_EQ_UINT(tx->pre_token_balance_count, 0u);
     TEST_EQ_UINT(tx->post_token_balance_count, 0u);
     TEST_EQ_UINT(tx->log_count, 0u);
+
+    idx_arena_destroy(&arena);
+    idx_json_free(doc);
+
+    /* No meta at all — a block fetched with less than full detail. `success`
+     * has nothing behind it there, which is what has_meta says: a consumer
+     * that must know whether a transaction executed reads both. */
+    doc = parse(BLOCK_WITH(BASIC_MESSAGE("[]"), "null"));
+    idx_arena_init(&arena, 0);
+    TEST_EQ_INT(
+        idx_block_decode(idx_json_root(doc), 1u, &arena, &block, &err),
+        IDX_OK);
+    TEST_ASSERT(!block.transactions[0].has_meta);
 
     idx_arena_destroy(&arena);
     idx_json_free(doc);

@@ -122,7 +122,8 @@ typedef struct {
      * transaction detail; without it every count below is zero and the
      * pointers are NULL.
      */
-    bool success; /* meta.err was null */
+    bool has_meta; /* the transaction carried a meta object at all */
+    bool success;  /* meta.err was null — meaningless without has_meta */
     uint64_t fee;
 
     /*

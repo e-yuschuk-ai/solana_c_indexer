@@ -138,6 +138,54 @@ typedef struct {
 uint16_t idx_token_2022_extension_type_at(idx_slice extension_types,
                                           size_t index);
 
+/* The sub-instructions of the transfer fee extension, in the order the program
+ * declares them. */
+typedef enum {
+    IDX_TOKEN_2022_FEE_IX_INITIALIZE_CONFIG = 0,
+    IDX_TOKEN_2022_FEE_IX_TRANSFER_CHECKED_WITH_FEE = 1,
+    IDX_TOKEN_2022_FEE_IX_WITHDRAW_FROM_MINT = 2,
+    IDX_TOKEN_2022_FEE_IX_WITHDRAW_FROM_ACCOUNTS = 3,
+    IDX_TOKEN_2022_FEE_IX_HARVEST_TO_MINT = 4,
+    IDX_TOKEN_2022_FEE_IX_SET_TRANSFER_FEE = 5
+} idx_token_2022_fee_ix;
+
+/*
+ * A decoded TransferCheckedWithFee. `amount` is what leaves the source, fee
+ * included; `fee` is the part of it the mint withholds, so the destination is
+ * credited with the difference.
+ */
+typedef struct {
+    const idx_pubkey *source;
+    const idx_pubkey *mint;
+    const idx_pubkey *destination;
+    const idx_pubkey *authority;
+    uint64_t amount;
+    uint64_t fee;
+    uint8_t decimals;
+} idx_token_2022_transfer_with_fee;
+
+/*
+ * Decodes the payload of a TransferCheckedWithFee — the sub-instruction of the
+ * transfer fee extension — which the caller has recognised by its group and
+ * sub-discriminant. `payload` is `extension.payload`, the bytes after the
+ * sub-discriminant, and `ix` is the instruction the accounts come from.
+ *
+ * This is the first per-extension payload decoded here, and it exists because
+ * a consumer needs it: a mint that charges a transfer fee moves its tokens
+ * through this instruction and not through TransferChecked, so leaving it as
+ * bytes would make a transfer-fee mint's trades invisible to the extraction
+ * in M6. Decision D5 asks for exactly that — extension payloads decoded when
+ * something needs them, not up front.
+ *
+ *   IDX_OK             `out` is populated
+ *   IDX_ERR_RANGE      the payload is truncated
+ *   IDX_ERR_PARSE      the instruction names fewer accounts than the four this
+ *                      operates on
+ */
+idx_status idx_token_2022_transfer_with_fee_decode(
+    const idx_transaction *tx, const idx_instruction *ix, idx_slice payload,
+    idx_token_2022_transfer_with_fee *out, idx_error *err);
+
 /*
  * Decodes `ix`, which the caller has established belongs to Token-2022.
  *

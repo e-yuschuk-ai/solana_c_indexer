@@ -150,7 +150,22 @@ block stream carried — nothing is fetched from a node to complete a record.
       mismatch. Only what moved is emitted, as for SOL, and the movement is a
       pair of amounts rather than a signed delta because a raw token amount is
       bounded by uint64 and not by any supply
-- [ ] Transfer extraction from System and SPL Token instructions
+- [x] Transfer extraction from System and SPL Token instructions — walked over
+      the inner instructions too, which is where most token movement is: a
+      venue's program transfers on the trader's behalf. Mints and burns are
+      transfers to and from the mint itself rather than a shape of their own,
+      so a balance never grows with no event to explain it. Token-2022's
+      `TransferCheckedWithFee` is the first extension payload M5 left as bytes
+      to be decoded, since a mint that charges a fee moves its tokens through
+      it and not through `TransferChecked`. What the
+      instruction does not name — the mint of an unchecked `Transfer`, its
+      scale, the wallets behind the token accounts — is resolved against
+      `meta`'s token balances, and the owners are resolved now rather than
+      joined later, because a token account's owner can change and the state
+      tier only holds the latest. Failed transactions yield nothing: their
+      instructions rolled back. `CloseAccount` is the one movement left out —
+      its amount is in `meta` rather than in the instruction, and D5 assigns
+      balance-delta reasoning to the swap path
 - [ ] Per-DEX swap decoders, one module per venue
 - [ ] Swap normalization: mints and amounts resolved against the balance deltas
       of the pool's accounts, attributed per invocation so a multi-hop route
