@@ -19,6 +19,15 @@ const idx_pubkey *idx_instruction_program_id(const idx_transaction *tx,
     return &tx->accounts[ix->program_id_index].pubkey;
 }
 
+const idx_pubkey *idx_instruction_account(const idx_transaction *tx,
+                                          const idx_instruction *ix,
+                                          size_t position) {
+    if (position >= ix->account_count) {
+        return NULL;
+    }
+    return &tx->accounts[ix->account_indices[position]].pubkey;
+}
+
 /* Reads an object field that must fit in a byte (the header counts do). */
 static idx_status read_u8_field(idx_json_val object, const char *key,
                                 uint8_t *out, idx_error *err) {

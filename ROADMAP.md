@@ -110,10 +110,16 @@ handling is a requirement rather than a refinement.
 - [x] Address lookup table resolution
 - [x] Instruction and inner-instruction decoding
 - [x] Transaction metadata: status, fee, pre/post balances, token balances, logs
-- [ ] Built-in program instruction decoders: System and SPL Token
+- [x] Built-in program instruction decoders: System and SPL Token — two
+      formats, not one: the System program is bincode with a `u32`
+      discriminant, SPL Token a packed byte layout with a `u8` one. Both
+      decoders resolve their named accounts against the transaction's
+      resolved list, and an unknown discriminant reports not-found rather
+      than a parse failure, so a program upgrade is skipped and not fatal
 - [ ] SPL Token-2022: base instruction set and extension discriminants —
       per-extension payloads are decoded when a consumer needs them, not
-      up front
+      up front. The base set is the one above, which the same decoder already
+      reads for either program, so what is left is discriminant 25 and up
 
 ## M6 — Domain decoding
 

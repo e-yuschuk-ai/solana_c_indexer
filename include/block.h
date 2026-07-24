@@ -183,4 +183,13 @@ idx_status idx_block_decode(idx_json_val block, idx_slot slot, idx_arena *arena,
 const idx_pubkey *idx_instruction_program_id(const idx_transaction *tx,
                                              const idx_instruction *ix);
 
+/*
+ * The account an instruction names in `position`, or NULL when it names fewer
+ * accounts than that. The per-program decoders resolve their named operands
+ * through this; every index is in range by construction.
+ */
+const idx_pubkey *idx_instruction_account(const idx_transaction *tx,
+                                          const idx_instruction *ix,
+                                          size_t position);
+
 #endif /* IDX_BLOCK_H */
