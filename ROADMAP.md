@@ -138,7 +138,11 @@ block stream carried — nothing is fetched from a node to complete a record.
       invokes the Vote program. Missing one costs storage, mistaking anything
       else for one loses an event the block no longer holds, so the rule errs
       in the direction that is recoverable
-- [ ] SOL balance state per account, from `meta.pre/postBalances`
+- [x] SOL balance state per account, from `meta.pre/postBalances` — only the
+      accounts that moved are emitted. The ones that never move are the ones
+      in every transaction, so writing them would rewrite the hottest keys in
+      the system to say nothing happened, and an account with no movement has
+      nothing for the terminal to show
 - [ ] Token balance state per token account, from `meta.pre/postTokenBalances`,
       carrying mint, owner and decimals
 - [ ] Transfer extraction from System and SPL Token instructions
