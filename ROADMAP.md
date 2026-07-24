@@ -198,7 +198,10 @@ whatever the vote filter removes. The entities are the ones D5 names.
 
 ## M8 — Observability and operations
 
-- [ ] Metrics: slots/sec, transactions/sec, lag behind chain tip, error counts
+- [~] Metrics: slots/sec, transactions/sec, lag behind chain tip, error counts
+      — a progress line every 5 s carries the rates and the lag while the run is
+      live; error counts are still only in the summary at exit, and nothing is
+      exported in a form a machine can scrape
 - [ ] WebSocket health: reconnect count, time since last notification
 - [ ] Promotion lag: slots sitting in the confirmed tier awaiting finalization
 - [ ] Reorg counter and depth histogram

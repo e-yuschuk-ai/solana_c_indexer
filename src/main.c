@@ -1,3 +1,4 @@
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +26,11 @@ static void on_signal(int signal_number) {
     idx_pipeline_request_stop(g_pipeline);
 }
 
+/* How often the progress line is written, and how long the reporter sleeps
+ * between checks of the stop flag — short, so shutdown is not held up by it. */
+#define IDX_PROGRESS_INTERVAL_SECONDS 5.0
+#define IDX_PROGRESS_TICK_MS 200
+
 static double monotonic_seconds(void) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -37,6 +43,107 @@ typedef struct {
     uint64_t votes;         /* what it dropped */
     uint64_t sol_balances;  /* balance rows the survivors produced */
 } idx_tally;
+
+/*
+ * How far behind the chain a block is: wall clock against the timestamp the
+ * chain itself put on it. Written as text because the answer is sometimes that
+ * there is no answer — blockTime is optional, and a block without one leaves
+ * the lag unknown rather than zero.
+ */
+static void format_lag(char *out, size_t size, int64_t block_time,
+                       bool has_block_time) {
+    if (!has_block_time) {
+        snprintf(out, size, "unknown");
+        return;
+    }
+    snprintf(out, size, "%lld s", (long long)time(NULL) - (long long)block_time);
+}
+
+/*
+ * What the reporter thread needs to see. The counters it reads are written by
+ * the processing thread without synchronization, exactly as documented for
+ * idx_pipeline_get_stats: a reading may be a few blocks stale, and nothing
+ * decides anything on it.
+ */
+typedef struct {
+    const idx_pipeline *pipeline;
+    const idx_tally *tally;
+    volatile sig_atomic_t stop;
+} idx_progress;
+
+static void sleep_ms(int milliseconds) {
+    struct timespec request;
+    request.tv_sec = milliseconds / 1000;
+    request.tv_nsec = (long)(milliseconds % 1000) * 1000000L;
+    nanosleep(&request, NULL);
+}
+
+/*
+ * Where the indexer is, in the terms an operator actually asks about: how far
+ * behind the chain it is right now, and how fast it is moving. The lag is wall
+ * clock against the chain's own timestamp for the newest block committed, so it
+ * keeps climbing while the stream is stalled instead of standing still at
+ * whatever the last block said.
+ */
+static void report_progress(double window_seconds, uint64_t blocks,
+                            uint64_t transactions,
+                            const idx_pipeline_stats *stats) {
+    char lag[32];
+    format_lag(lag, sizeof(lag), stats->tip_block_time,
+               stats->has_tip_block_time);
+
+    /* Slots between the tip and the durable frontier: what a backfill still
+     * owes, and 0 once it has caught up. */
+    unsigned long long behind = 0;
+    if (stats->last_indexed != IDX_SLOT_NONE &&
+        stats->tip_slot > stats->last_indexed) {
+        behind = (unsigned long long)(stats->tip_slot - stats->last_indexed);
+    }
+
+    /* The transaction rate is what survived the vote filter, the same number
+     * the summary reports at exit — counting votes here would say more about
+     * the validators than about the indexer. */
+    IDX_INFO("progress: slot %llu, lag %s, %.1f blocks/s, %.0f txn/s, "
+             "%llu slots behind",
+             (unsigned long long)stats->tip_slot, lag,
+             (window_seconds > 0.0) ? (double)blocks / window_seconds : 0.0,
+             (window_seconds > 0.0) ? (double)transactions / window_seconds : 0.0,
+             behind);
+}
+
+static void *run_reporter(void *argument) {
+    idx_progress *progress = (idx_progress *)argument;
+
+    double last = monotonic_seconds();
+    uint64_t last_blocks = 0;
+    uint64_t last_transactions = 0;
+
+    while (!progress->stop) {
+        sleep_ms(IDX_PROGRESS_TICK_MS);
+
+        double now = monotonic_seconds();
+        double window = now - last;
+        if (window < IDX_PROGRESS_INTERVAL_SECONDS) {
+            continue;
+        }
+
+        idx_pipeline_stats stats;
+        idx_pipeline_get_stats(progress->pipeline, &stats);
+        uint64_t transactions = progress->tally->transactions;
+
+        /* Nothing has been committed yet: the subscription is still coming up,
+         * and the transport says so at its own level. */
+        if (stats.tip_slot != IDX_SLOT_NONE) {
+            report_progress(window, stats.blocks - last_blocks,
+                            transactions - last_transactions, &stats);
+        }
+
+        last = now;
+        last_blocks = stats.blocks;
+        last_transactions = transactions;
+    }
+    return NULL;
+}
 
 /*
  * Consumer stub. Storing decoded transactions is M7; until then the handler
@@ -106,14 +213,16 @@ static idx_status count_block(const idx_raw_block *block, void *user,
     tally->votes += votes;
     tally->sol_balances += sol_balances;
 
+    char lag[32];
+    format_lag(lag, sizeof(lag), decoded.block_time, decoded.has_block_time);
     IDX_DEBUG("slot %llu: %zu txns (%zu votes dropped, %zu v0), %zu ix, "
               "%zu inner, %llu lamports fees, %zu sol balances, "
-              "%zu token balances, %zu logs, %.2f MiB from %s",
+              "%zu token balances, %zu logs, %.2f MiB from %s, lag %s",
               (unsigned long long)block->slot, decoded.transaction_count,
               votes, versioned, instructions, inner, (unsigned long long)fees,
               sol_balances, token_balances, logs,
               (double)block->bytes / (1024.0 * 1024.0),
-              idx_block_origin_name(block->origin));
+              idx_block_origin_name(block->origin), lag);
     return IDX_OK;
 }
 
@@ -173,9 +282,30 @@ int main(int argc, char **argv) {
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
+    /*
+     * The run loop owns this thread from here on, so the progress line comes
+     * from a second one. It only reads counters, and a failure to start it
+     * costs visibility rather than indexing.
+     */
+    idx_progress progress;
+    progress.pipeline = pipeline;
+    progress.tally = &tally;
+    progress.stop = 0;
+
+    pthread_t reporter;
+    bool reporting = pthread_create(&reporter, NULL, run_reporter, &progress) == 0;
+    if (!reporting) {
+        IDX_WARN("cannot start the progress reporter; continuing without it");
+    }
+
     double started = monotonic_seconds();
     idx_status status = idx_pipeline_run(pipeline, &err);
     double elapsed = monotonic_seconds() - started;
+
+    if (reporting) {
+        progress.stop = 1;
+        pthread_join(reporter, NULL);
+    }
 
     idx_pipeline_stats stats;
     idx_pipeline_get_stats(pipeline, &stats);
@@ -213,6 +343,13 @@ int main(int argc, char **argv) {
     if (stats.last_indexed != IDX_SLOT_NONE) {
         IDX_INFO("last indexed slot %llu",
                  (unsigned long long)stats.last_indexed);
+    }
+    if (stats.tip_slot != IDX_SLOT_NONE) {
+        char lag[32];
+        format_lag(lag, sizeof(lag), stats.tip_block_time,
+                   stats.has_tip_block_time);
+        IDX_INFO("newest block seen: slot %llu, lag %s at exit",
+                 (unsigned long long)stats.tip_slot, lag);
     }
 
     g_pipeline = NULL;

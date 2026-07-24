@@ -292,6 +292,37 @@ static void save_cursor(idx_pipeline *pipeline, bool force) {
 }
 
 /*
+ * Records where the chain was when the newest block seen was produced, which is
+ * what an operator reads as lag. Highest slot wins whatever delivered it: a
+ * block recovered from HTTP is normally below the frontier and must not pull
+ * the tip backwards, but on a run where the socket never produced anything it
+ * is the only tip there is.
+ */
+static void observe_tip(idx_pipeline *pipeline, const idx_raw_block *block) {
+    if (pipeline->stats.tip_slot != IDX_SLOT_NONE &&
+        block->slot <= pipeline->stats.tip_slot) {
+        return;
+    }
+    pipeline->stats.tip_slot = block->slot;
+
+    /* Optional on the chain, so its absence is not an error — it only leaves
+     * the lag unknown until a block that carries one arrives. */
+    idx_json_val block_time = idx_json_get(block->value, "blockTime");
+    if (!idx_json_is_present(block_time) || idx_json_is_null(block_time)) {
+        return;
+    }
+    int64_t seconds = 0;
+    idx_error time_err;
+    idx_error_clear(&time_err);
+    if (idx_json_read_i64(block->value, "blockTime", &seconds, &time_err) !=
+        IDX_OK) {
+        return;
+    }
+    pipeline->stats.tip_block_time = seconds;
+    pipeline->stats.has_tip_block_time = true;
+}
+
+/*
  * Hands the block to the consumer and, if it takes it, advances the indexed
  * frontier. The arena is reset as soon as the handler returns, so anything the
  * handler allocated from it is gone by the time this returns.
@@ -308,6 +339,7 @@ static idx_status commit_block(idx_pipeline *pipeline,
     }
 
     pipeline->stats.blocks++;
+    observe_tip(pipeline, block);
     if (pipeline->highest_committed == IDX_SLOT_NONE ||
         block->slot > pipeline->highest_committed) {
         pipeline->highest_committed = block->slot;
@@ -799,6 +831,7 @@ idx_status idx_pipeline_open(const idx_pipeline_options *options,
 
     idx_arena_init(&pipeline->arena, IDX_ARENA_DEFAULT_CHUNK_SIZE);
     pipeline->stats.last_indexed = options->cursor->last_indexed;
+    pipeline->stats.tip_slot = IDX_SLOT_NONE;
     pipeline->highest_committed = options->cursor->last_indexed;
 
     *out = pipeline;

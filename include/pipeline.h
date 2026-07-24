@@ -146,6 +146,18 @@ typedef struct {
     uint64_t gap_ranges_abandoned;
     size_t gap_ranges;
 
+    /*
+     * The newest block committed so far and the chain's own timestamp for it.
+     * Wall clock minus that timestamp is how far behind the chain the indexer
+     * is; the subtraction is left to the reader on purpose, so a stalled
+     * stream shows a lag that keeps growing rather than a number frozen at the
+     * last block. `has_tip_block_time` stays false until a block carrying a
+     * blockTime arrives — the field is optional, and old blocks may lack it.
+     */
+    idx_slot tip_slot;       /* IDX_SLOT_NONE until the first commit */
+    int64_t tip_block_time;  /* unix seconds */
+    bool has_tip_block_time;
+
     idx_slot last_indexed;   /* IDX_SLOT_NONE until the first commit */
     bool used_fallback;
 } idx_pipeline_stats;

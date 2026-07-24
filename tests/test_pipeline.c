@@ -305,6 +305,10 @@ static void test_open_and_close(void) {
     TEST_EQ_UINT(stats.blocks_recovered, 0u);
     /* Where the cursor already was, not a fresh zero. */
     TEST_EQ_UINT(stats.last_indexed, 250000000u);
+    /* Nothing has been committed, so there is no tip to measure lag against —
+     * and slot 0 would read as one. */
+    TEST_EQ_UINT(stats.tip_slot, IDX_SLOT_NONE);
+    TEST_ASSERT(!stats.has_tip_block_time);
 
     /* Requesting a stop before the run starts is legal and is what a signal
      * arriving early does. */

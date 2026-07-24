@@ -96,6 +96,20 @@ export SOLANA_RPC_URL="https://your-endpoint.example/"
 
 Run `./run.sh --help` for the full list of options.
 
+While it runs, a progress line every five seconds says where it is:
+
+```
+progress: slot 434958966, lag 10 s, 1.8 blocks/s, 2450 txn/s, 0 slots behind
+```
+
+`lag` is the wall clock minus the chain's own timestamp on the newest block
+indexed, so it answers the question the rates only hint at: whether the indexer
+is keeping up. A lag that holds steady means it is; one that climbs run after
+run means blocks are arriving slower than the chain produces them — which is
+what a rate-limited endpoint looks like from here. `slots behind` is the
+distance from that block back to the durable frontier, and stays at 0 unless a
+backfill or a gap is outstanding.
+
 ### Configuration
 
 Settings are resolved from four sources, each overriding the previous one:
