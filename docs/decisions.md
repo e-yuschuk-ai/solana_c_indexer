@@ -572,3 +572,44 @@ the ring grows from single-consumer to multi-consumer and the sequencing has to
 carry per-consumer positions; or if the ring is observed to overflow against a
 paid endpoint, which would mean the pipeline is genuinely undersized rather
 than merely protected.
+
+---
+
+## D8 — An aggregator route is not a pool swap
+
+**Status:** accepted · **Affects:** M6, M7, M9
+
+The venues M6 decodes are of two kinds. A pool holds liquidity and quotes a
+price; an aggregator holds none and routes through the pools that do. Jupiter
+is the second, and a route both is not a swap and *contains* the swaps that
+are, one per leg, as inner instructions of the very same transaction.
+
+**Decision.** Only a pool produces a `swaps` row. A route is decoded — its
+`SwapEvent` states the mints and exact amounts of each leg — but it is recorded
+as attribution, never as a swap of its own. `idx_venue_is_pool` is the line.
+
+Three things follow.
+
+**Double counting is the whole point.** A routed trade appears twice in a
+block: once as Jupiter's `SwapEvent` and once as the pool's own instruction or
+event. Counting both would double the volume of every venue Jupiter routes
+through, and since most retail flow on Solana is routed, that is most of the
+volume. Bars built on it would be wrong in a way no one would notice, because
+the shape of the series would look right.
+
+**`SwapEvent.amm` is not a pool address.** It is documented as the AMM that
+filled the leg, and for a PumpSwap leg it carries the PumpSwap *program* id,
+observed directly in a mainnet block. A pool column that is sometimes a program
+is worse than no column, so the field is dropped rather than stored and
+explained away. The leg's own venue supplies the pool when this indexer decodes
+that venue.
+
+**A route still reaches further than the decoders do.** Its event states mints
+and amounts for legs through venues M6 has no decoder for, which is the only
+place a swap on an unknown program is visible at all. That is worth keeping
+even though it produces no pool row, and it is what makes the aggregator worth
+decoding rather than skipping.
+
+**Revisit if** the query side needs "what did this wallet trade" independently
+of which pools filled it, in which case routes become an entity of their own —
+still not a pool swap, but a row rather than an annotation.

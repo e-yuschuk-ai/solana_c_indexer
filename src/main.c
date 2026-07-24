@@ -2,6 +2,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #include "balance.h"
@@ -12,6 +13,7 @@
 #include "pipeline.h"
 #include "slot_cursor.h"
 #include "transfer.h"
+#include "venue.h"
 #include "version.h"
 #include "vote_filter.h"
 
@@ -46,7 +48,43 @@ typedef struct {
     uint64_t token_balances;  /* the same, per token account */
     uint64_t sol_transfers;   /* lamport movements from System instructions */
     uint64_t token_transfers; /* token movements, mints and burns included */
+    uint64_t swaps[IDX_VENUE_JUPITER + 1]; /* one counter per venue */
+    uint64_t swap_failures; /* payloads a venue decoder recognised but could
+                             * not read: a layout that has drifted */
 } idx_tally;
+
+/* Counts the swaps of one transaction, by venue. Every instruction is offered
+ * to the venue decoders, top level and inner alike: a route's legs and a
+ * wallet's direct trades arrive at different depths. */
+static void count_swaps(const idx_transaction *tx, idx_tally *tally) {
+    for (size_t i = 0; i < tx->instruction_count + tx->inner_instruction_count;
+         i++) {
+        const idx_instruction *list = NULL;
+        size_t count = 0;
+        if (i < tx->instruction_count) {
+            list = &tx->instructions[i];
+            count = 1;
+        } else {
+            const idx_inner_instructions *group =
+                &tx->inner_instructions[i - tx->instruction_count];
+            list = group->instructions;
+            count = group->instruction_count;
+        }
+        for (size_t j = 0; j < count; j++) {
+            idx_swap swap;
+            /* Anything that is not a swap comes back not-found, which is the
+             * answer for almost every instruction in a block. Anything else is
+             * a payload a decoder claimed and then could not read, which is
+             * what a program upgrade looks like from here. */
+            idx_status swap_status = idx_swap_decode(tx, &list[j], &swap, NULL);
+            if (swap_status == IDX_OK) {
+                tally->swaps[swap.venue]++;
+            } else if (swap_status != IDX_ERR_NOT_FOUND) {
+                tally->swap_failures++;
+            }
+        }
+    }
+}
 
 /*
  * How far behind the chain a block is: wall clock against the timestamp the
@@ -235,6 +273,8 @@ static idx_status count_block(const idx_raw_block *block, void *user,
             }
         }
 
+        count_swaps(tx, tally);
+
         instructions += tx->instruction_count;
         for (size_t j = 0; j < tx->inner_instruction_count; j++) {
             inner += tx->inner_instructions[j].instruction_count;
@@ -303,7 +343,8 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    idx_tally tally = {0, 0, 0, 0, 0, 0};
+    idx_tally tally;
+    memset(&tally, 0, sizeof(tally));
 
     idx_pipeline_options options;
     idx_pipeline_options_init(&options);
@@ -363,6 +404,17 @@ int main(int argc, char **argv) {
              (unsigned long long)tally.sol_transfers,
              (unsigned long long)tally.token_transfers, elapsed,
              (elapsed > 0.0) ? (double)stats.blocks / elapsed : 0.0);
+    for (idx_venue venue = IDX_VENUE_PUMP_CURVE; venue <= IDX_VENUE_JUPITER;
+         venue++) {
+        if (tally.swaps[venue] != 0) {
+            IDX_INFO("swaps: %-14s %llu", idx_venue_name(venue),
+                     (unsigned long long)tally.swaps[venue]);
+        }
+    }
+    if (tally.swap_failures != 0) {
+        IDX_WARN("swaps: %llu payloads a venue decoder could not read",
+                 (unsigned long long)tally.swap_failures);
+    }
     IDX_INFO("skipped=%llu missed=%llu reconnects=%llu socket=%.1f MiB",
              (unsigned long long)stats.slots_skipped,
              (unsigned long long)stats.slots_missed,

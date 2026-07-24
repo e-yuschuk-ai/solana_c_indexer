@@ -166,7 +166,17 @@ block stream carried — nothing is fetched from a node to complete a record.
       instructions rolled back. `CloseAccount` is the one movement left out —
       its amount is in `meta` rather than in the instruction, and D5 assigns
       balance-delta reasoning to the swap path
-- [ ] Per-DEX swap decoders, one module per venue
+- [~] Per-DEX swap decoders, one module per venue — pump.fun (the bonding
+      curve and PumpSwap), Raydium (AMM v4 and CLMM) and Jupiter v6. Where a
+      program emits an Anchor CPI event the event is what is decoded, not the
+      instruction: it states what was traded rather than what was requested,
+      and it survives the account-order changes an upgrade brings — pump's
+      curve already ships two layouts at once. Where there is no event
+      (Raydium AMM v4) the decoder names the pool and its vaults and leaves
+      the amounts to the balance deltas, which is the item below. Jupiter is
+      decoded but is not a pool: decision D8. Still open: Raydium CPMM, whose
+      account layout no block observed so far contains, and which is not going
+      in on a layout that was not verified against real data
 - [ ] Swap normalization: mints and amounts resolved against the balance deltas
       of the pool's accounts, attributed per invocation so a multi-hop route
       yields one row per pool
