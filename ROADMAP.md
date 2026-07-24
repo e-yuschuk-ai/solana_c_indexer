@@ -143,8 +143,13 @@ block stream carried — nothing is fetched from a node to complete a record.
       in every transaction, so writing them would rewrite the hottest keys in
       the system to say nothing happened, and an account with no movement has
       nothing for the terminal to show
-- [ ] Token balance state per token account, from `meta.pre/postTokenBalances`,
-      carrying mint, owner and decimals
+- [x] Token balance state per token account, from `meta.pre/postTokenBalances`,
+      carrying mint, owner and decimals — the two lists are sparse and
+      independent, so an observation is their join on the token account and its
+      mint: an account on one side only is a creation or a close, not a
+      mismatch. Only what moved is emitted, as for SOL, and the movement is a
+      pair of amounts rather than a signed delta because a raw token amount is
+      bounded by uint64 and not by any supply
 - [ ] Transfer extraction from System and SPL Token instructions
 - [ ] Per-DEX swap decoders, one module per venue
 - [ ] Swap normalization: mints and amounts resolved against the balance deltas
