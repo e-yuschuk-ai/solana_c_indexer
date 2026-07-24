@@ -19,11 +19,21 @@ the repository should be in a language other than English.
 
 ## Commit trailers
 
-Commits authored by an AI agent must include a `Reasoning-Effort: <value>`
-trailer, alongside any `Co-Authored-By`/session trailers the tool already
-adds, using the value the session actually ran with (e.g. `Reasoning-Effort:
-40`), not a qualitative label. Do not retroactively amend older commits to
-add this — only apply it going forward.
+Commits authored by an AI agent must include a `Reasoning-Effort:` trailer,
+alongside any `Co-Authored-By`/session trailers the tool already adds. The
+value is whatever the session actually ran with: the number when the tool
+exposes one (`Reasoning-Effort: 40`), the named level when that is what it
+exposes (`Reasoning-Effort: high`). Never a value the session did not run
+with, and never a guess — if it is not knowable, say so rather than invent it.
+
+The point is auditability. `Co-Authored-By` records which model wrote a
+commit and this trailer records how much reasoning it was given, so a decision
+that reads as poor can be traced back to a model or an effort level that was
+too cheap for the problem. A missing or invented trailer breaks that silently,
+which is worse than not having one at all.
+
+Do not retroactively amend older commits to add this — only apply it going
+forward.
 
 ## Roadmap-driven work
 
