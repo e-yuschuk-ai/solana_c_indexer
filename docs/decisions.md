@@ -610,6 +610,85 @@ place a swap on an unknown program is visible at all. That is worth keeping
 even though it produces no pool row, and it is what makes the aggregator worth
 decoding rather than skipping.
 
+### The route's endpoints, from netting its legs
+
+A route is recorded as one completed trade: wallet paid A, received D. The
+endpoints are not read off the first and last leg, because a route can fan out
+— A into B over two pools in parallel, then B into C — and then there is no
+single first leg. Instead the legs' `SwapEvent`s are **netted per mint**: each
+leg subtracts its input mint and adds its output mint, the intermediate mints
+cancel to zero, and what is left is the mint consumed (net negative — the
+input A) and the mint produced (net positive — the output D). This was verified
+on a two-leg mainnet route: `D9cC…pump -634524165458`, `WSOL 0`,
+`USDC +207536010`, and the intermediate leg boundary matched to the unit.
+
+Two limits are accepted rather than solved. The amounts are the AMM-level ones
+the events state; a platform fee taken on the output after the last swap is not
+in them, so the route's D is what the pools delivered, not necessarily what net
+of fee reached the wallet — which is the right number for a price between
+endpoints, the use this serves. And a cyclic route that starts and ends in the
+same mint nets every mint to about zero and has no endpoints in this sense; it
+is a self-trade, not a user swap, and yields no completed-trade row.
+
 **Revisit if** the query side needs "what did this wallet trade" independently
 of which pools filled it, in which case routes become an entity of their own —
 still not a pool swap, but a row rather than an annotation.
+
+---
+
+## D9 — Swap amounts come from the most authoritative source each venue offers
+
+**Status:** accepted · **Affects:** M6, M7
+
+M6's decoders name what a swap touched; normalization has to say how much
+moved. There is more than one place that number can come from, and they are
+not equally trustworthy, so the rule is a ranking rather than a single method.
+
+**Decision.** For each swap, take the amounts from the highest source available:
+
+1. **The program's own event.** An Anchor CPI event (pump.fun's `TradeEvent`,
+   PumpSwap's `Buy`/`SellEvent`, Jupiter's `SwapEvent`) carries the exact
+   amounts the program computed, both sides. Nothing beats it: it is the
+   program's own arithmetic, per invocation, immune to account-order drift.
+
+2. **Raydium's `ray_log`.** The AMM v4 emits no CPI event but logs a
+   base64 line — `Program log: ray_log: <b64>` — whose `SwapBaseIn` form
+   carries `amount_in` and `out_amount`, and whose `SwapBaseOut` form carries
+   `amount_out` and `deduct_in`. That is both sides, per invocation. It was
+   measured to agree to the unit with the vault deltas (`out_amount = 5794390`
+   against a `-5794390` USDC vault delta on the same swap).
+
+3. **Vault balance deltas.** For a venue that offers neither — Raydium CLMM —
+   the missing side is the change in the pool's own vault across the
+   transaction.
+
+### Why the ranking, and not just deltas everywhere
+
+Vault deltas are per *transaction*, not per instruction, so they cannot split
+two swaps that touch the same pool in one transaction — the arbitrage case,
+where a bot buys and sells the same pool in a single atomic step and the vault
+nets the two. An event and a `ray_log` line are emitted once per invocation, so
+they separate what a delta sums. Deltas are also silent about a swap that moved
+a mint the transaction touched elsewhere; the per-invocation sources are not.
+Deltas are kept only as the last resort, for the one venue with no better
+source and for the rare truncated-log case.
+
+### `ray_log` and truncation
+
+`ray_log` lines are ordinary program logs, so the runtime can drop them under
+its cumulative log-size limit (`Log truncated`). In practice this is rare for a
+swap — measured as the overwhelming majority surviving — but it is possible, so
+a Raydium v4 swap whose `ray_log` is absent falls through to the vault deltas
+rather than failing. The lines carry no instruction index, so they are paired
+with Raydium invocations in execution order and cross-checked against the one
+amount the instruction itself fixed; a pair whose fixed side disagrees is not
+trusted.
+
+### Decimals travel with the amount, scaling is deferred
+
+Amounts are stored raw, in the mint's base units, exactly as the chain states
+them. The price a bar needs is `(quote_raw / 10^quote_dec) / (base_raw /
+10^base_dec)`, so both mints' decimals are resolved here — free, from the token
+balances D5 already reads — and carried on the row. Scaling happens at the
+price step, not before: storing raw keeps the observation exact and lets a
+consumer that wants a different scale compute it.

@@ -44,4 +44,29 @@ idx_status idx_venue_raydium_decode(const idx_transaction *tx,
                                     const idx_instruction *ix, idx_venue venue,
                                     idx_swap *out, idx_error *err);
 
+/*
+ * Both amounts of an AMM v4 swap, taken from its `ray_log`. The program emits
+ * no CPI event but logs a base64 line whose swap variants carry the full
+ * trade: `SwapBaseIn` states `amount_in` and `out_amount`, `SwapBaseOut`
+ * `amount_out` and `deduct_in`. Either way both sides are present, which is
+ * what makes this the amount source D9 ranks above the vault deltas.
+ */
+typedef struct {
+    uint64_t amount_in;
+    uint64_t amount_out;
+    bool is_base_in; /* the SwapBaseIn variant, for the caller's cross-check */
+} idx_raydium_swap_log;
+
+/*
+ * Parses the bytes of a decoded `ray_log` — the payload after the base64,
+ * whose first byte is the log type.
+ *
+ *   IDX_OK             `raw` was a swap log and `out` is filled
+ *   IDX_ERR_NOT_FOUND  a ray_log of another kind (init, deposit, withdraw):
+ *                      not a swap, so not this decoder's
+ *   IDX_ERR_RANGE      a swap log shorter than its fields
+ */
+idx_status idx_raydium_swap_log_parse(idx_slice raw, idx_raydium_swap_log *out,
+                                      idx_error *err);
+
 #endif /* IDX_VENUE_RAYDIUM_H */

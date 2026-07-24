@@ -177,9 +177,19 @@ block stream carried — nothing is fetched from a node to complete a record.
       decoded but is not a pool: decision D8. Still open: Raydium CPMM, whose
       account layout no block observed so far contains, and which is not going
       in on a layout that was not verified against real data
-- [ ] Swap normalization: mints and amounts resolved against the balance deltas
+- [x] Swap normalization: mints and amounts resolved against the balance deltas
       of the pool's accounts, attributed per invocation so a multi-hop route
-      yields one row per pool
+      yields one row per pool. The amount source is per venue and picks the
+      most authoritative one available (decision D9): an Anchor event states
+      both amounts (pump, PumpSwap); Raydium AMM v4 states one and logs the
+      other in its `ray_log` line, with the vault deltas as the fallback when
+      the runtime truncated the logs; Raydium CLMM states one and the other
+      comes from its vault deltas. Mints and decimals are resolved from the
+      block's token balances for the accounts the venue names, never fetched
+      (D5). Amounts stay raw and both sides' decimals ride along, so the price
+      step scales without a join. Jupiter is not a pool row: its `SwapEvent`
+      legs are netted per mint to the route's real endpoints A and D and
+      recorded as a completed trade (decision D8)
 - [ ] Price on a swap whose counter-side is a quote mint (SOL/WSOL, USDT, USDC,
       USD1), with the quote set configurable
 - [ ] Pool registry: structure learned from the first observed swap, enriched

@@ -45,4 +45,30 @@ idx_status idx_venue_pump_decode(const idx_transaction *tx,
                                  const idx_instruction *ix, idx_venue venue,
                                  idx_swap *out, idx_error *err);
 
+/*
+ * The structural accounts of a PumpSwap buy/sell instruction — the two mints
+ * and the pool vaults, which its event does not carry. They are read from the
+ * instruction rather than resolved from the trader's token accounts because
+ * the quote-side account is often a wrapped-SOL account created and closed
+ * within the same transaction, so it never reaches the block's token balances;
+ * the mints, named outright as accounts 3 and 4, always do.
+ */
+typedef struct {
+    idx_pubkey pool;
+    idx_pubkey base_mint;
+    idx_pubkey quote_mint;
+    idx_pubkey user_base_account;  /* tells a resolved side which mint it is */
+    idx_pubkey pool_base_vault;
+    idx_pubkey pool_quote_vault;
+} idx_pump_amm_accounts;
+
+/*
+ * Fills `out` and returns true when `ix` is a PumpSwap swap instruction (buy or
+ * sell) naming enough accounts. The instruction, not its event, is where these
+ * live; normalization pairs the two on the pool.
+ */
+bool idx_venue_pump_amm_accounts(const idx_transaction *tx,
+                                 const idx_instruction *ix,
+                                 idx_pump_amm_accounts *out);
+
 #endif /* IDX_VENUE_PUMP_H */

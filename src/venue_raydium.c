@@ -8,6 +8,57 @@
 #define RAYDIUM_AMM_IX_SWAP_BASE_IN 9
 #define RAYDIUM_AMM_IX_SWAP_BASE_OUT 11
 
+/* ray_log log types, the first byte of the decoded line. */
+#define RAYDIUM_LOG_SWAP_BASE_IN 3
+#define RAYDIUM_LOG_SWAP_BASE_OUT 4
+
+idx_status idx_raydium_swap_log_parse(idx_slice raw, idx_raydium_swap_log *out,
+                                      idx_error *err) {
+    if (out == NULL) {
+        return IDX_FAIL(err, IDX_ERR_INVALID_ARG, "out must not be NULL");
+    }
+    memset(out, 0, sizeof(*out));
+
+    idx_cursor cursor;
+    idx_cursor_init(&cursor, raw);
+    uint8_t log_type = 0;
+    IDX_TRY(idx_cursor_u8(&cursor, &log_type, err));
+    if (log_type != RAYDIUM_LOG_SWAP_BASE_IN &&
+        log_type != RAYDIUM_LOG_SWAP_BASE_OUT) {
+        return IDX_FAIL(err, IDX_ERR_NOT_FOUND, "ray_log type %u is not a swap",
+                        (unsigned)log_type);
+    }
+
+    /*
+     * Both variants are seven u64s after the type. They differ in which slots
+     * hold the two amounts:
+     *
+     *   SwapBaseIn   amount_in, minimum_out, direction, user_source,
+     *                pool_coin, pool_pc, out_amount
+     *   SwapBaseOut  max_in, amount_out, direction, user_source,
+     *                pool_coin, pool_pc, deduct_in
+     *
+     * so the input is the first field of one and the last of the other, and
+     * likewise the output. deduct_in is what the pool actually took, not the
+     * ceiling the caller allowed, which is why it is the input rather than
+     * max_in.
+     */
+    uint64_t fields[7];
+    for (size_t i = 0; i < 7; i++) {
+        IDX_TRY(idx_cursor_u64le(&cursor, &fields[i], err));
+    }
+    if (log_type == RAYDIUM_LOG_SWAP_BASE_IN) {
+        out->is_base_in = true;
+        out->amount_in = fields[0];
+        out->amount_out = fields[6];
+    } else {
+        out->is_base_in = false;
+        out->amount_out = fields[1];
+        out->amount_in = fields[6];
+    }
+    return IDX_OK;
+}
+
 /*
  * AMM v4 account layouts. The trailing three are the trader's — source,
  * destination, owner — and are addressed from the end, because what varies is

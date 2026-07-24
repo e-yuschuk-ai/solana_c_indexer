@@ -145,6 +145,56 @@ static idx_status decode_amm_event(idx_slice fields, bool is_buy, idx_swap *out,
     return IDX_OK;
 }
 
+/*
+ * PumpSwap swap instruction discriminators, sha256("global:<name>")[..8]. The
+ * variants share one account order for the accounts this reads, so they are
+ * treated alike here: `buy_exact_quote_in` is a `buy` that fixes the quote it
+ * spends rather than the base it wants, and names the same pool, mints and
+ * vaults in the same positions.
+ */
+static const uint8_t AMM_BUY[8] = {0x66, 0x06, 0x3d, 0x12,
+                                   0x01, 0xda, 0xeb, 0xea};
+static const uint8_t AMM_SELL[8] = {0x33, 0xe6, 0x85, 0xa4,
+                                    0x01, 0x7f, 0x83, 0xad};
+static const uint8_t AMM_BUY_EXACT_QUOTE_IN[8] = {0xc6, 0x2e, 0x15, 0x52,
+                                                  0xb4, 0xd9, 0xe8, 0x70};
+
+/* The swap variants share this account order; only the leading accounts, which
+ * is all this reads, are asserted stable. */
+#define AMM_IX_POOL 0
+#define AMM_IX_BASE_MINT 3
+#define AMM_IX_QUOTE_MINT 4
+#define AMM_IX_USER_BASE_ACCOUNT 5
+#define AMM_IX_POOL_BASE_VAULT 7
+#define AMM_IX_POOL_QUOTE_VAULT 8
+#define AMM_IX_MIN_ACCOUNTS 9
+
+bool idx_venue_pump_amm_accounts(const idx_transaction *tx,
+                                 const idx_instruction *ix,
+                                 idx_pump_amm_accounts *out) {
+    if (tx == NULL || ix == NULL || out == NULL || ix->data.len < 8) {
+        return false;
+    }
+    if (memcmp(ix->data.data, AMM_BUY, 8) != 0 &&
+        memcmp(ix->data.data, AMM_SELL, 8) != 0 &&
+        memcmp(ix->data.data, AMM_BUY_EXACT_QUOTE_IN, 8) != 0) {
+        return false;
+    }
+    if (ix->account_count < AMM_IX_MIN_ACCOUNTS) {
+        return false;
+    }
+    out->pool = *idx_instruction_account(tx, ix, AMM_IX_POOL);
+    out->base_mint = *idx_instruction_account(tx, ix, AMM_IX_BASE_MINT);
+    out->quote_mint = *idx_instruction_account(tx, ix, AMM_IX_QUOTE_MINT);
+    out->user_base_account =
+        *idx_instruction_account(tx, ix, AMM_IX_USER_BASE_ACCOUNT);
+    out->pool_base_vault =
+        *idx_instruction_account(tx, ix, AMM_IX_POOL_BASE_VAULT);
+    out->pool_quote_vault =
+        *idx_instruction_account(tx, ix, AMM_IX_POOL_QUOTE_VAULT);
+    return true;
+}
+
 idx_status idx_venue_pump_decode(const idx_transaction *tx,
                                  const idx_instruction *ix, idx_venue venue,
                                  idx_swap *out, idx_error *err) {
