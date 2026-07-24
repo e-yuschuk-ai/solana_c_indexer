@@ -135,12 +135,17 @@ the chain produces, by both transports. That endpoint is rate limited and is
 not representative; the project targets a paid provider, where this shape is
 known to work. The figures above are kept for sizing, not as a capacity claim.
 
-### Scope: general purpose
+### Scope: the whole stream, whatever the indexer keeps
 
-The indexer is general purpose, so it subscribes with `"all"` and
-`transactionDetails=full`. The figures above are therefore the design target,
-not a worst case: every milestone is sized for ~12 MiB/s and ~2600 tx/s
-sustained.
+The subscription is `"all"` with `transactionDetails=full`. D5 later narrowed
+what is *persisted* to a trading terminal's entities, but it did not narrow
+what is *received*, and the two are independent: D5 indexes only what it
+observes and never looks anything up, so a filtered subscription would not be
+an optimisation but a permanent blind spot — a pool that appears tomorrow is
+discovered only by watching every block today. The figures above are therefore
+the design target, not a worst case: every milestone is sized for ~12 MiB/s and
+~2600 tx/s sustained, even though the vote filter means far fewer transactions
+reach storage.
 
 `transactionDetails` also accepts `accounts`, `signatures` and `none`, and the
 filter accepts `{"mentionsAccountOrProgram": <pubkey>}`. Both stay exposed in
@@ -275,7 +280,7 @@ what ClickHouse is worst at:
 
 libpq is a first-class C library, the same shape of integration as libcurl.
 
-Rejected: Redis (index design moves into key space; range queries by market and
+Rejected: Redis (index design moves into key space; range queries by pool and
 time get painful), SQLite (wrong if the consuming backend is a separate
 service), ClickHouse for both (reorg deletes force slot-level partitioning —
 about 216k partitions/day at 2.5 slots/s).
@@ -283,8 +288,8 @@ about 216k partitions/day at 2.5 slots/s).
 ### Bars are recomputed, not deleted
 
 A bar spans several slots, so a reorg can invalidate part of one. Deleting rows
-by slot is not enough: after removing trades at or above the reorged slot, the
-affected buckets must be recomputed from the trades that remain. This is a
+by slot is not enough: after removing swaps at or above the reorged slot, the
+affected buckets must be recomputed from the swaps that remain. This is a
 plain SQL aggregate over a small window and is the strongest single argument
 for a relational confirmed tier.
 
@@ -304,17 +309,135 @@ described in D3.
 
 ## D5 — Domain decoding scope
 
-**Status:** open · **Due:** start of M5
+**Status:** accepted · **Affects:** M5, M6, M7, M9
 
-The confirmed-tier tables named so far — trades, mints, transfers, bars — are
-domain entities, not raw chain structures. Transfers and mints come from SPL
-Token, which M5 already covers, but trades require per-DEX instruction decoders
-(Raydium, Orca, Meteora, pump.fun and others), and bars are derived from
-trades rather than decoded from anything.
+The tables named before this decision — trades, mints, transfers, bars — are
+domain entities, not raw chain structures. Deriving them requires knowing what
+the indexer is for, because a general-purpose ledger and a trading data source
+keep almost disjoint sets of rows.
 
-M5 as written stops at generic instruction decoding. The domain layer —
-per-program decoders plus the derivation of bars — needs its own milestone
-between decoding and storage, and its scope depends on which venues matter.
+**Decision.** The indexer feeds a **trading terminal**. It persists balances,
+transfers, swaps and the price series derived from swaps, and nothing else. It
+indexes **only what it observes** in the block stream: no state is ever fetched
+from a node to complete a record, and what was not seen does not exist.
+
+### The M5/M6 boundary is the program, not the work
+
+Instruction decoders for built-in programs (System, SPL Token, SPL Token-2022)
+belong to M5; decoders for domain programs — the DEX venues — belong to M6. A
+built-in instruction layout is a fixed discriminant plus fields, as much a
+chain format as a v0 message or a lookup table, and it does not depend on which
+venues this decision names. What M6 owns is the step after: turning a decoded
+`Transfer` into a transfer row, a swap, or a bar.
+
+Token-2022 is the exception worth bounding. Its base instruction set mirrors
+SPL Token, but the extension surface (transfer fees, confidential transfers,
+metadata pointers, transfer hooks) is larger than everything else in M5 put
+together. M5 decodes the base set and identifies extension instructions;
+per-extension payloads wait for a consumer that needs them.
+
+### What is persisted
+
+| Entity | Shape | Source | Key |
+| --- | --- | --- | --- |
+| `blocks` | state | block header | `slot` |
+| `sol_balances` | state | `meta.pre/postBalances` | account |
+| `token_balances` | state | `meta.pre/postTokenBalances` | token account |
+| `sol_transfers` | event | System instructions | instruction path |
+| `token_transfers` | event | SPL Token/2022 instructions | instruction path |
+| `swaps` | event | per-venue decoders + balance deltas | instruction path |
+| `pools` | dimension | observed swaps, creation instructions | pool address |
+| `tokens` | dimension | balances, mint and metadata instructions | mint address |
+| `bars_1s` `bars_1m` `bars_1d` | derived | swaps priced against a quote mint | `(pool, bucket)` |
+
+The instruction path is `(slot, transaction_index, instruction_index,
+inner_index)`. It identifies an event uniquely, survives the D4 reorg delete
+because it leads with the slot, and lets any derived row be traced back to the
+instruction that produced it.
+
+`meta.pre/postBalances` covers every account the transaction touches, so SOL
+balances are complete for observed accounts at no decoding cost. Token balances
+are sparse by construction and carry `owner` and `decimals` in the wire form,
+which is what makes "how much of each token does this wallet hold" a query
+rather than a derivation.
+
+Price is a nullable column on `swaps`, not a table: it is filled when one side
+of the swap is a quote mint — SOL/WSOL, USDT, USDC, USD1, configurable — and
+left empty otherwise. A swap between two non-quote tokens is still recorded; it
+simply produces no price.
+
+Every table carries `slot` so the D4 reorg path can delete by slot. The state
+tables are versioned by slot rather than appended: an upsert in PostgreSQL, a
+`ReplacingMergeTree` keyed on the account with the slot as version in
+ClickHouse.
+
+### Vote transactions are dropped
+
+They are the majority of transactions in a mainnet block — every validator
+votes every slot — and they produce no balance change, transfer or swap that
+this indexer keeps. They are recognised by their program and discarded before
+extraction. This is the single largest lever on storage volume in the project,
+and it costs one comparison per transaction.
+
+### Discovery replaces lookup
+
+Not fetching account state sounds like it would cripple swap decoding, since a
+swap instruction's payload rarely says which mint is which side. It does not:
+the token balance deltas in `meta` for the pool's own accounts state exactly
+which mints moved and by how much. The per-venue decoder supplies the account
+list of that specific invocation, which is what attributes each delta to the
+right pool when a transaction routes through several. Pool structure is
+therefore learned from the first swap observed, and a creation instruction only
+enriches a record that already exists.
+
+Token metadata is where the rule costs something. `decimals` arrives free with
+every token balance. Name and symbol live in the Metaplex Token Metadata
+program, or in the Token-2022 `TokenMetadata` extension, so they are known only
+for tokens whose metadata instruction was observed — in practice, tokens born
+after indexing started. The description is not on chain at all: the metadata
+account holds a URI to JSON on Arweave or IPFS. `tokens` stores the URI
+unresolved. Resolving it is an HTTP fetch against a service that is not the
+chain, and it belongs to a consumer, not to the indexer.
+
+### Bars are keyed by pool, never aggregated across pools
+
+The same pair trades in many pools, and a price series merged across them is
+worse than any of its inputs: minor pools carry mostly arbitrage flow, and
+their prints move the aggregate without anything having happened in the market
+a user is watching. This was tried and it does not hold up. The terminal lists
+the pools that trade a pair and the user picks one; `swaps` keeps the pool on
+every row so a consumer can still combine them deliberately.
+
+Two resolutions are stored: **1s** and **1m**. Every coarser interval a
+terminal offers is built from those two on read. **1d** exists for a different
+reason — a pool with no swaps for a long window is abandoned, and keeping
+second-resolution bars for it is pure cost. Those pools are rolled up to daily
+bars and their fine-grained rows dropped. `bars_1s` is the largest table in the
+design, at 86400 buckets per active pool per day, and this rollup is what keeps
+it bounded.
+
+### What this rules out
+
+- **No transaction table, and therefore no ledger queries.** Nothing stores
+  transactions as such, so "transaction by signature" and "transactions by
+  account" cannot be answered. Every event row carries its signature, which is
+  enough to link out to an explorer, and M9 is scoped to the terminal's reads —
+  wallet, token, pool — rather than to the chain.
+- **No mint and burn events.** They change balances, and the balance state
+  already reflects that. `InitializeMint` is still observed, because it is one
+  of the sources for the `tokens` dimension.
+- **No account state indexing**, which stays in the backlog, and no RPC call to
+  complete a record the stream did not carry.
+- **History of balances is not kept**, only their current value per slot. A
+  consumer that wants a wallet's balance over time reconstructs it from the
+  transfer and swap rows.
+
+**Revisit if** the terminal grows a view that needs a chain-wide query rather
+than a wallet-, token- or pool-anchored one, which would bring back a
+transaction table and with it the volume this decision exists to avoid; or if
+metadata coverage for pre-existing tokens turns out to matter more than the
+no-lookup rule, in which case the narrowest exception is a one-off backfill of
+the `tokens` dimension, never a fetch on the indexing path.
 
 ---
 

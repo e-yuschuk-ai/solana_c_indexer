@@ -110,41 +110,68 @@ handling is a requirement rather than a refinement.
 - [x] Address lookup table resolution
 - [x] Instruction and inner-instruction decoding
 - [x] Transaction metadata: status, fee, pre/post balances, token balances, logs
-- [ ] Built-in program instruction decoders (System, SPL Token, SPL Token-2022)
+- [ ] Built-in program instruction decoders: System and SPL Token
+- [ ] SPL Token-2022: base instruction set and extension discriminants —
+      per-extension payloads are decoded when a consumer needs them, not
+      up front
 
 ## M6 — Domain decoding
 
-Turns decoded instructions into the entities the storage tiers hold. Scope
-depends on decision D5, still open.
+Turns decoded instructions into the entities the storage tiers hold. Decision
+D5 fixes the scope: the indexer feeds a trading terminal, so it derives
+balances, transfers, swaps and bars, and it derives them only from what the
+block stream carried — nothing is fetched from a node to complete a record.
 
-- [ ] Transfer extraction from SPL Token and System instructions
-- [ ] Mint and burn extraction
+- [ ] Vote transaction filter: recognised and dropped before any extraction
+- [ ] SOL balance state per account, from `meta.pre/postBalances`
+- [ ] Token balance state per token account, from `meta.pre/postTokenBalances`,
+      carrying mint, owner and decimals
+- [ ] Transfer extraction from System and SPL Token instructions
 - [ ] Per-DEX swap decoders, one module per venue
-- [ ] Normalized trade record: venue, market, side, amounts, price, payer
-- [ ] Bar derivation from trades: OHLCV per market and interval
+- [ ] Swap normalization: mints and amounts resolved against the balance deltas
+      of the pool's accounts, attributed per invocation so a multi-hop route
+      yields one row per pool
+- [ ] Price on a swap whose counter-side is a quote mint (SOL/WSOL, USDT, USDC,
+      USD1), with the quote set configurable
+- [ ] Pool registry: structure learned from the first observed swap, enriched
+      by a creation instruction when one is seen
+- [ ] Token registry: address and decimals from balances, name, symbol and
+      metadata URI from metadata instructions when observed
+- [ ] Bar derivation per pool at 1s and 1m, keyed `(pool, bucket)`
 - [ ] Bar recomputation for a slot range, used by the reorg path (D4)
 - [ ] Golden-file tests: real blocks in, expected entities out
 
 ## M7 — Storage
 
 Two tiers per decision D4: PostgreSQL for `confirmed`, ClickHouse for
-`finalized`. Sized for the ~2600 transactions/s that D1a commits to.
+`finalized`. Sized for the ~2600 transactions/s that D1a commits to, less
+whatever the vote filter removes. The entities are the ones D5 names.
 
 - [ ] Storage abstraction layer, one interface per tier
 - [ ] PostgreSQL client over libpq: connection handling, prepared statements
-- [ ] Confirmed schema: trades, mints, transfers, bars, indexed by slot
+- [ ] Confirmed schema, indexed by slot: balances, transfers, swaps, bars,
+      plus the pool and token dimensions
+- [ ] Balance state written as an upsert keyed on the account, so the tier
+      holds a current value per account rather than an observation log
 - [ ] Reorg path in one transaction: delete at or above the reorged slot,
       rewrite, and recompute the affected bars
 - [ ] Retention: drop confirmed rows once promoted and past a safety margin
 - [ ] ClickHouse HTTP client: query, insert, error and exception-code handling
 - [ ] `RowBinary` serialization for the insert path (`JSONEachRow` for
       development and debugging)
-- [ ] Finalized schema: denormalized, ordered by `(slot, transaction_index)`,
-      partitioned by slot range, with column codecs where they pay off
+- [ ] Finalized schema: denormalized, event tables ordered by
+      `(slot, transaction_index)`, partitioned by slot range, with column
+      codecs where they pay off
+- [ ] Balance state as `ReplacingMergeTree` keyed on the account with the slot
+      as version, so the latest observation wins without a delete
 - [ ] Batching writer: accumulate rows, flush on row count or time bound,
       never one insert per block (`TOO_MANY_PARTS`)
 - [ ] Re-indexing a slot is safe: `ReplacingMergeTree` keyed on the sort key
       with a version column
+- [ ] Bar rollup: a pool with no swaps for a configured window is abandoned;
+      its `1s` and `1m` bars collapse into `1d` and the fine-grained rows are
+      dropped. `bars_1s` is the largest table in the design and this is what
+      bounds it
 - [ ] Promotion path: on finalization, bulk read from PostgreSQL and batch
       insert into ClickHouse without refetching the block
 - [ ] Schema migrations for both tiers
@@ -163,8 +190,15 @@ Two tiers per decision D4: PostgreSQL for `confirmed`, ClickHouse for
 
 ## M9 — Query interface
 
+The API serves the terminal D5 describes, not a general ledger. Nothing stores
+transactions as such, so every read is anchored on a wallet, a token or a
+pool — there is no query by signature.
+
 - [ ] Read API over indexed data (HTTP + JSON)
-- [ ] Queries: transaction by signature, transactions by account, block by slot
+- [ ] Wallet: SOL and token balances, transfers in and out
+- [ ] Token: the pools that trade it, and the latest price in each
+- [ ] Pool: swap history, and bars for an interval and slot range — `1s` and
+      `1m` are stored, coarser intervals are built from them on read
 - [ ] Pagination and result limits
 - [ ] API documentation in `docs/`
 
