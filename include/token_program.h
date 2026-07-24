@@ -8,9 +8,10 @@
  * This is not bincode; the System program's format is a different one.
  *
  * Token-2022 shares this base instruction set, so the same decoder serves both
- * programs and `idx_token_program_matches` accepts either. Its extension
- * instructions start at discriminant 25 and are the next roadmap item; until
- * then they decode as IDX_ERR_NOT_FOUND, the same as any unknown variant.
+ * programs and `idx_token_program_matches` accepts either. What Token-2022 has
+ * beyond it starts at discriminant 25 and belongs to `token_2022.h`, whose
+ * decoder covers both ranges; here those decode as IDX_ERR_NOT_FOUND, the same
+ * as any unknown variant.
  *
  * Accounts are pointers into the transaction's resolved account list, so a
  * decoded instruction borrows `tx` and the arena the block was decoded into.

@@ -116,10 +116,15 @@ handling is a requirement rather than a refinement.
       decoders resolve their named accounts against the transaction's
       resolved list, and an unknown discriminant reports not-found rather
       than a parse failure, so a program upgrade is skipped and not fatal
-- [ ] SPL Token-2022: base instruction set and extension discriminants —
+- [x] SPL Token-2022: base instruction set and extension discriminants —
       per-extension payloads are decoded when a consumer needs them, not
       up front. The base set is the one above, which the same decoder already
-      reads for either program, so what is left is discriminant 25 and up
+      reads for either program, so what was left is discriminant 25 and up:
+      six instructions decoded in full and fourteen extension groups
+      identified by group and sub-discriminant, payload untouched. The
+      metadata and group interfaces are dispatched by an eight-byte
+      discriminator rather than by these, so they belong to the M6 item that
+      builds the token dimension from them
 
 ## M6 — Domain decoding
 
