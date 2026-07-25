@@ -190,8 +190,13 @@ block stream carried — nothing is fetched from a node to complete a record.
       step scales without a join. Jupiter is not a pool row: its `SwapEvent`
       legs are netted per mint to the route's real endpoints A and D and
       recorded as a completed trade (decision D8)
-- [ ] Price on a swap whose counter-side is a quote mint (SOL/WSOL, USDT, USDC,
-      USD1), with the quote set configurable
+- [x] Price on a swap whose counter-side is a quote mint (SOL/WSOL, USDT, USDC,
+      USD1), with the quote set configurable — `idx_price` recognises the quote
+      side against a configurable, priority-ordered quote set and records the
+      price as quote units per base unit, resolving mints, amounts and decimals
+      from the swap row alone (decisions D5, D10). A swap between two quotes is
+      priced in the higher-priority one; a swap with no quote side stays
+      unpriced
 - [ ] Pool registry: structure learned from the first observed swap, enriched
       by a creation instruction when one is seen
 - [ ] Token registry: address and decimals from balances, name, symbol and

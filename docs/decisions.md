@@ -692,3 +692,65 @@ them. The price a bar needs is `(quote_raw / 10^quote_dec) / (base_raw /
 balances D5 already reads — and carried on the row. Scaling happens at the
 price step, not before: storing raw keeps the observation exact and lets a
 consumer that wants a different scale compute it.
+
+---
+
+## D10 — A swap is priced only against a configured quote mint, quotes ranked
+
+**Status:** accepted · **Affects:** M6, M7, M9
+
+A swap row (D9) carries both mints and both raw amounts, but a raw amount is a
+count of base units and carries no value on its own. A price appears only when
+one side is a mint whose value is already understood — a quote. D5 already fixed
+that price is a nullable column on `swaps`, filled when one side is a quote mint
+and left empty otherwise; this decision fixes *which* mints those are and what
+happens when both sides qualify.
+
+**Decision.** Pricing is done against a configured, ordered set of quote mints.
+The default set, highest priority first, is `usdc, usdt, usd1, sol` — the dollar
+stables ahead of SOL. For each swap:
+
+- **One side is a quote.** That side is the quote, the other is the base, and
+  the price is `(quote_raw / 10^quote_dec) / (base_raw / 10^base_dec)` — quote
+  units per one whole base unit.
+- **Both sides are quotes** (a SOL/USDC pool, say). The higher-priority quote
+  wins, so the base is the lower-priority side. With the default order a SOL/USDC
+  pool reports SOL's price in dollars, not dollars priced in SOL.
+- **Neither side is a quote.** The swap is still recorded; it simply has no
+  price (D5).
+
+The set is `quote_mints` in `idx_config`: a comma-separated list of well-known
+names (`sol`/`wsol`, `usdc`, `usdt`, `usd1`) or base58 mint addresses, in
+priority order. An empty list disables pricing.
+
+### Why an ordered set rather than a fixed rule
+
+The tie-break only bites when a pool trades two quote mints, which is a small
+fraction of pools but a real one. Ranking is the least surprising rule: the
+common case (a token against a single quote) is order-independent, and the
+SOL/stable case resolves to the reading a terminal expects — an asset priced in
+dollars. Making it configuration rather than a constant means a deployment that
+wants everything denominated in SOL just reorders the list.
+
+### Decimals and scale come from the row, nothing is fetched
+
+D9 carries both mints' decimals on the swap row, resolved from the block's token
+balances, and native SOL's scale is known without one. The price step reads
+those, so it fetches nothing (D5). WSOL is the one quote whose side often has no
+token balance — a native-lamports curve trade — and its scale is the constant
+the swap normalizer already supplies. A quote side whose decimals the block
+never carried leaves the row priced but numberless, which is kept distinct from
+a swap that has no quote side at all.
+
+### Price is a double
+
+The price spans a large dynamic range — a memecoin at 1e-9 SOL, a stablecoin at
+~1 — and a double's ~15–16 significant digits cover it with room to spare, which
+is what a bar's OHLCV and a terminal's chart consume. The raw amounts and both
+decimals stay on the row, so a consumer that needs a different representation
+recomputes it exactly; the double is a convenience, not the system of record.
+
+**Revisit if** a quote is needed that is not a single mint — a basket, or a mint
+whose own price must be looked up first — which would make "quote" a resolved
+value rather than a membership test; or if storage needs an exact decimal type,
+in which case the raw amounts already on the row are what it serializes.

@@ -74,6 +74,14 @@ typedef struct {
      * this per plan. 0 selects the client's default. */
     uint64_t blocks_range_limit;
 
+    /*
+     * The quote mints a swap is priced against, in priority order (decision
+     * D10). A comma-separated list of well-known names (sol/wsol, usdc, usdt,
+     * usd1) or base58 mint addresses; empty prices nothing. Parsed by
+     * idx_quote_set_parse — see price.h.
+     */
+    char quote_mints[IDX_CONFIG_STR_MAX];
+
     bool help; /* set when --help was requested; not a config value */
 } idx_config;
 

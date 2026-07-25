@@ -11,6 +11,7 @@
 #include "error.h"
 #include "log.h"
 #include "pipeline.h"
+#include "price.h"
 #include "slot_cursor.h"
 #include "swap.h"
 #include "transfer.h"
@@ -52,13 +53,20 @@ typedef struct {
     uint64_t swaps[IDX_VENUE_JUPITER + 1]; /* pool rows, one counter per venue */
     uint64_t routes;   /* aggregated Jupiter completed-trade rows */
     uint64_t resolved; /* pool rows with both mints and both amounts filled */
+
+    /* The mints a swap is priced against, and how much came out priced. */
+    idx_quote_set quotes;
+    uint64_t priced; /* rows (pool or route) that yielded a price */
+    uint64_t priced_by_quote[IDX_QUOTE_OTHER + 1];
 } idx_tally;
 
 /*
  * Normalizes the swaps of one transaction and tallies what came out: pool rows
  * by venue, aggregated route rows, and how many pool rows came out complete —
  * both mints and both amounts — which is the number that says the resolution
- * against meta is working against live data.
+ * against meta is working against live data. Each row is then priced against
+ * the configured quote mints (M6), and the ones that yielded a number are
+ * counted by quote, which is what shows the price step reaching live swaps.
  */
 static idx_status normalize_swaps(const idx_transaction *tx, idx_arena *arena,
                                   idx_tally *tally, idx_error *err) {
@@ -67,6 +75,13 @@ static idx_status normalize_swaps(const idx_transaction *tx, idx_arena *arena,
     IDX_TRY(idx_swap_normalize(tx, arena, &rows, &count, err));
     for (size_t i = 0; i < count; i++) {
         const idx_swap_row *row = &rows[i];
+
+        idx_price price;
+        if (idx_price_of_swap(&tally->quotes, row, &price) && price.has_price) {
+            tally->priced++;
+            tally->priced_by_quote[price.quote]++;
+        }
+
         if (row->kind == IDX_SWAP_AGGREGATED) {
             tally->routes++;
             continue;
@@ -346,6 +361,13 @@ int main(int argc, char **argv) {
     idx_tally tally;
     memset(&tally, 0, sizeof(tally));
 
+    /* The set the handler prices against. Already validated as parseable by
+     * idx_config_validate, so this only fails on an internal error. */
+    if (idx_quote_set_parse(&tally.quotes, cfg.quote_mints, &err) != IDX_OK) {
+        IDX_ERROR("cannot build the quote set: %s", err.message);
+        return EXIT_FAILURE;
+    }
+
     idx_pipeline_options options;
     idx_pipeline_options_init(&options);
     options.config = &cfg;
@@ -416,6 +438,14 @@ int main(int argc, char **argv) {
     IDX_INFO("swaps: %llu pool rows (%llu fully resolved), %llu routes",
              (unsigned long long)pool_swaps, (unsigned long long)tally.resolved,
              (unsigned long long)tally.routes);
+    IDX_INFO("priced: %llu swaps against a quote mint",
+             (unsigned long long)tally.priced);
+    for (idx_quote quote = IDX_QUOTE_SOL; quote <= IDX_QUOTE_OTHER; quote++) {
+        if (tally.priced_by_quote[quote] != 0) {
+            IDX_INFO("priced: %-6s %llu", idx_quote_name(quote),
+                     (unsigned long long)tally.priced_by_quote[quote]);
+        }
+    }
     IDX_INFO("skipped=%llu missed=%llu reconnects=%llu socket=%.1f MiB",
              (unsigned long long)stats.slots_skipped,
              (unsigned long long)stats.slots_missed,

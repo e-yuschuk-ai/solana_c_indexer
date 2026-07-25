@@ -7,6 +7,8 @@
 #include <string.h>
 #include <strings.h>
 
+#include "price.h"
+
 #define IDX_CONFIG_DEFAULT_FILE "indexer.conf"
 #define IDX_CONFIG_LINE_MAX 1024
 
@@ -50,6 +52,7 @@ void idx_config_defaults(idx_config *cfg) {
     cfg->tx_details = IDX_TX_DETAILS_FULL;
     snprintf(cfg->block_filter, sizeof(cfg->block_filter), "all");
     cfg->blocks_range_limit = 0;
+    snprintf(cfg->quote_mints, sizeof(cfg->quote_mints), "usdc,usdt,usd1,sol");
     cfg->help = false;
 }
 
@@ -181,6 +184,13 @@ idx_status idx_config_apply_kv(idx_config *cfg, const char *key,
     if (strcmp(key, "blocks_range_limit") == 0) {
         return parse_u64(value, &cfg->blocks_range_limit, key, source, err);
     }
+    if (strcmp(key, "quote_mints") == 0 || strcmp(key, "quotes") == 0) {
+        /* Parsed for real in idx_config_validate; here it is only stored, so
+         * the value keeps the source-precedence rules every other setting has
+         * and is not rejected before a later source can override it. */
+        return set_string(cfg->quote_mints, sizeof(cfg->quote_mints), value,
+                          key, source, err);
+    }
     if (strcmp(key, "config") == 0 || strcmp(key, "config_file") == 0) {
         return set_string(cfg->config_file, sizeof(cfg->config_file), value,
                           key, source, err);
@@ -292,6 +302,7 @@ idx_status idx_config_apply_env(idx_config *cfg, idx_error *err) {
         {"INDEXER_TX_DETAILS", "tx_details"},
         {"INDEXER_BLOCK_FILTER", "block_filter"},
         {"INDEXER_BLOCKS_RANGE_LIMIT", "blocks_range_limit"},
+        {"INDEXER_QUOTE_MINTS", "quote_mints"},
         {"INDEXER_STATE_FILE", "state_file"},
     };
 
@@ -497,6 +508,11 @@ idx_status idx_config_validate(const idx_config *cfg, idx_error *err) {
         return IDX_FAIL(err, IDX_ERR_INVALID_ARG,
                         "block_filter must be 'all' or a base58 key");
     }
+    /* The quote set owns its own format; validating here means a typo fails at
+     * startup rather than silently pricing nothing. An empty list is allowed —
+     * it disables pricing on purpose. */
+    idx_quote_set quotes;
+    IDX_TRY(idx_quote_set_parse(&quotes, cfg->quote_mints, err));
     return IDX_OK;
 }
 
@@ -553,6 +569,8 @@ void idx_config_log(const idx_config *cfg) {
         IDX_INFO("config: blocks_range_limit = %" PRIu64,
                  cfg->blocks_range_limit);
     }
+    IDX_INFO("config: quote_mints = %s",
+             (cfg->quote_mints[0] != '\0') ? cfg->quote_mints : "<none>");
     IDX_INFO("config: state_file = %s",
              (cfg->state_file[0] != '\0') ? cfg->state_file : "<disabled>");
     if (cfg->config_file[0] != '\0') {
@@ -577,6 +595,8 @@ void idx_config_usage(FILE *out, const char *program) {
             "      --tx-details D     full, accounts, signatures or none\n"
             "      --block-filter F   'all' (default) or a program/account key\n"
             "      --blocks-range-limit N  getBlocks span cap for the plan\n"
+            "      --quote-mints LIST Priced-against mints, priority order\n"
+            "                         (names sol/usdc/usdt/usd1 or base58)\n"
             "      --state-file PATH  Slot cursor for resume (default: disabled)\n"
             "  -h, --help             Show this message\n"
             "\n"
@@ -585,7 +605,7 @@ void idx_config_usage(FILE *out, const char *program) {
             "  INDEXER_START_SLOT, INDEXER_END_SLOT, INDEXER_CONCURRENCY,\n"
             "  INDEXER_QUEUE_DEPTH,\n"
             "  INDEXER_COMMITMENT, INDEXER_TX_DETAILS, INDEXER_BLOCK_FILTER,\n"
-            "  INDEXER_BLOCKS_RANGE_LIMIT, INDEXER_STATE_FILE\n"
+            "  INDEXER_BLOCKS_RANGE_LIMIT, INDEXER_QUOTE_MINTS, INDEXER_STATE_FILE\n"
             "\n"
             "Precedence: defaults < config file < environment < command line\n",
             (program != NULL) ? program : "indexer", IDX_CONFIG_DEFAULT_FILE,

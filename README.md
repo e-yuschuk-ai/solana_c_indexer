@@ -132,7 +132,15 @@ Settings are resolved from four sources, each overriding the previous one:
 | `tx_details` | `INDEXER_TX_DETAILS` | `--tx-details` | `full` |
 | `block_filter` | `INDEXER_BLOCK_FILTER` | `--block-filter` | `all` |
 | `blocks_range_limit` | `INDEXER_BLOCKS_RANGE_LIMIT` | `--blocks-range-limit` | plan-dependent |
+| `quote_mints` | `INDEXER_QUOTE_MINTS` | `--quote-mints` | `usdc,usdt,usd1,sol` |
 | `state_file` | `INDEXER_STATE_FILE` | `--state-file` | *(disabled)* |
+
+`quote_mints` is the comma-separated list of mints a swap is priced against, in
+priority order: each entry is a well-known name (`sol`/`wsol`, `usdc`, `usdt`,
+`usd1`) or a base58 mint address. When a swap has a quote mint on one side, its
+price is recorded as quote units per one base unit; a swap between two quote
+mints is priced in the higher-priority one, and a swap with no quote side is
+kept unpriced. An empty list disables pricing. See decision D10.
 
 Two starting points are provided: [`.env.example`](.env.example) for the
 environment variables `run.sh` loads, and
