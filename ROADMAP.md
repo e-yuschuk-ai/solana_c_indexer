@@ -222,7 +222,15 @@ block stream carried — nothing is fetched from a node to complete a record.
       venue, is not decoded yet: recent mainnet blocks scanned while building
       this carried no `CreateMetadataAccountV3` to verify its layout against, so
       it waits on the golden-file fixtures below rather than going in from an IDL
-- [ ] Bar derivation per pool at 1s and 1m, keyed `(pool, bucket)`
+- [x] Bar derivation per pool at 1s and 1m, keyed `(pool, bucket)` —
+      `idx_bar_registry` folds priced pool swaps (price.h) into OHLCV bars at
+      both resolutions, keyed by `(pool, interval, bucket)` and never across
+      pools (D5). Open and close follow execution order, not arrival order —
+      each swap carries a `(slot, tx, instruction)` sequence, so an out-of-order
+      backfilled block still sets the right open — which makes a bar a pure fold
+      of its swaps and is what the recompute below relies on. Price is quote per
+      base and volume is carried on both sides, scaled by decimals; a route (not
+      a pool, D8) and an unpriced or untimed swap contribute nothing
 - [ ] Bar recomputation for a slot range, used by the reorg path (D4)
 - [ ] Golden-file tests: real blocks in, expected entities out
 

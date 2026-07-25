@@ -6,6 +6,7 @@
 #include <time.h>
 
 #include "balance.h"
+#include "bar.h"
 #include "block.h"
 #include "config.h"
 #include "error.h"
@@ -68,6 +69,10 @@ typedef struct {
     /* The token dimension, likewise. */
     idx_token_registry tokens;
     uint64_t token_metadata; /* metadata instructions decoded */
+
+    /* The price series, derived from priced pool swaps. */
+    idx_bar_registry bars;
+    uint64_t bar_swaps; /* priced pool swaps folded into bars */
 } idx_tally;
 
 /*
@@ -80,7 +85,8 @@ typedef struct {
  */
 static idx_status normalize_swaps(const idx_transaction *tx, idx_arena *arena,
                                   idx_tally *tally, idx_slot slot,
-                                  idx_error *err) {
+                                  int64_t block_time, bool has_block_time,
+                                  uint16_t tx_index, idx_error *err) {
     const idx_swap_row *rows = NULL;
     size_t count = 0;
     IDX_TRY(idx_swap_normalize(tx, arena, &rows, &count, err));
@@ -88,7 +94,9 @@ static idx_status normalize_swaps(const idx_transaction *tx, idx_arena *arena,
         const idx_swap_row *row = &rows[i];
 
         idx_price price;
-        if (idx_price_of_swap(&tally->quotes, row, &price) && price.has_price) {
+        bool priced = idx_price_of_swap(&tally->quotes, row, &price) &&
+                      price.has_price;
+        if (priced) {
             tally->priced++;
             tally->priced_by_quote[price.quote]++;
         }
@@ -97,6 +105,23 @@ static idx_status normalize_swaps(const idx_transaction *tx, idx_arena *arena,
          * pool and enriched by every one after (D5). A route row is not a pool,
          * and the registry drops it on the kind check. */
         IDX_TRY(idx_pool_registry_observe_swap(&tally->pools, row, slot, err));
+
+        /* A priced pool swap is a bar input (D5): a route is not a pool, and a
+         * block with no time cannot be bucketed. */
+        if (priced && row->kind == IDX_SWAP_POOL && row->has_pool &&
+            has_block_time) {
+            idx_bar_input in;
+            in.pool = row->pool;
+            in.price = price;
+            in.block_time = block_time;
+            in.seq.slot = slot;
+            in.seq.transaction_index = tx_index;
+            in.seq.instruction_index = row->instruction_index;
+            in.seq.inner_index = row->inner_index;
+            in.seq.inner = row->inner;
+            IDX_TRY(idx_bar_registry_observe(&tally->bars, &in, err));
+            tally->bar_swaps++;
+        }
 
         if (row->kind == IDX_SWAP_AGGREGATED) {
             tally->routes++;
@@ -366,7 +391,9 @@ static idx_status count_block(const idx_raw_block *block, void *user,
             }
         }
 
-        status = normalize_swaps(tx, block->arena, tally, block->slot, err);
+        status = normalize_swaps(tx, block->arena, tally, block->slot,
+                                 decoded.block_time, decoded.has_block_time,
+                                 (uint16_t)i, err);
         if (status != IDX_OK) {
             IDX_WARN("slot %llu: swap normalization failed: %s",
                      (unsigned long long)block->slot,
@@ -454,6 +481,7 @@ int main(int argc, char **argv) {
     memset(&tally, 0, sizeof(tally));
     idx_pool_registry_init(&tally.pools);
     idx_token_registry_init(&tally.tokens);
+    idx_bar_registry_init(&tally.bars);
 
     /* The set the handler prices against. Already validated as parseable by
      * idx_config_validate, so this only fails on an internal error. */
@@ -551,6 +579,9 @@ int main(int argc, char **argv) {
              idx_token_registry_count(&tally.tokens),
              (unsigned long long)tally.tokens.with_metadata,
              (unsigned long long)tally.token_metadata);
+    IDX_INFO("bars: %zu (1s+1m) from %llu priced pool swaps",
+             idx_bar_registry_count(&tally.bars),
+             (unsigned long long)tally.bar_swaps);
     IDX_INFO("skipped=%llu missed=%llu reconnects=%llu socket=%.1f MiB",
              (unsigned long long)stats.slots_skipped,
              (unsigned long long)stats.slots_missed,
@@ -590,6 +621,7 @@ int main(int argc, char **argv) {
     idx_pipeline_close(pipeline);
     idx_pool_registry_free(&tally.pools);
     idx_token_registry_free(&tally.tokens);
+    idx_bar_registry_free(&tally.bars);
 
     if (status != IDX_OK) {
         IDX_ERROR("%s", err.message);
