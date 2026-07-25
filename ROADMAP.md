@@ -239,7 +239,16 @@ block stream carried — nothing is fetched from a node to complete a record.
       double-counted and a bucket whose swaps were all reorged away stays gone.
       It is exact because a bar is a pure fold of its swaps. The reorg path that
       calls it lives in M7; this is the derivation half it needs
-- [ ] Golden-file tests: real blocks in, expected entities out
+- [x] Golden-file tests: real blocks in, expected entities out —
+      `tests/golden/golden_block.json` is seven real transactions from mainnet
+      slot 435146411 (a pump.fun create-and-buy, two more pump curve trades, two
+      PumpSwap and two Raydium AMM v4), and `test_golden` runs them through the
+      decode → filter → extract → normalize → price → registries → bars path and
+      checks the result against facts read off the chain independently: the
+      token's mint, decimals, name ("United States Water Reserve"), symbol
+      ("USWR") and creator, the exact price of its first trade, and the
+      aggregate entity counts. This is what verified the pump CreateEvent and
+      Raydium v4 layouts against real bytes rather than an IDL
 
 ## M7 — Storage
 
