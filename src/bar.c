@@ -155,6 +155,21 @@ static idx_status observe_interval(idx_bar_registry *reg,
     return IDX_OK;
 }
 
+/* An input's price and its two scaled volumes, the numbers a bar folds in. */
+static void input_metrics(const idx_bar_input *in, double *price,
+                         double *base_vol, double *quote_vol) {
+    *price = in->price.price;
+    *base_vol =
+        (double)in->price.base_amount / pow10_double(in->price.base_decimals);
+    *quote_vol =
+        (double)in->price.quote_amount / pow10_double(in->price.quote_decimals);
+}
+
+/* True when an input can be folded at all: it must be priced and timed. */
+static bool input_is_foldable(const idx_bar_input *in) {
+    return in->price.has_price && in->block_time > 0;
+}
+
 idx_status idx_bar_registry_observe(idx_bar_registry *reg,
                                     const idx_bar_input *in, idx_error *err) {
     if (reg == NULL || in == NULL) {
@@ -162,15 +177,14 @@ idx_status idx_bar_registry_observe(idx_bar_registry *reg,
     }
     /* No price means nothing to chart; no block time means nowhere to place it
      * (block time is optional on the chain). Neither is an error. */
-    if (!in->price.has_price || in->block_time <= 0) {
+    if (!input_is_foldable(in)) {
         return IDX_OK;
     }
 
-    double price = in->price.price;
-    double base_vol = (double)in->price.base_amount /
-                      pow10_double(in->price.base_decimals);
-    double quote_vol = (double)in->price.quote_amount /
-                       pow10_double(in->price.quote_decimals);
+    double price;
+    double base_vol;
+    double quote_vol;
+    input_metrics(in, &price, &base_vol, &quote_vol);
 
     for (idx_bar_interval iv = IDX_BAR_1S; iv < IDX_BAR_INTERVAL_COUNT; iv++) {
         IDX_TRY(observe_interval(reg, in, iv, price, base_vol, quote_vol, err));
@@ -198,4 +212,101 @@ size_t idx_bar_registry_count(const idx_bar_registry *reg) {
         return 0;
     }
     return idx_map_count(&reg->by_key);
+}
+
+/*
+ * Folds one survivor into a single interval, but only if that interval's bucket
+ * is in `affected` — so a rebuild touches exactly the buckets that were cleared
+ * and never double-counts a survivor whose other bucket was left intact.
+ */
+static idx_status refold_if_affected(idx_bar_registry *reg,
+                                    const idx_map *affected,
+                                    const idx_bar_input *in,
+                                    idx_bar_interval interval, double price,
+                                    double base_vol, double quote_vol,
+                                    idx_error *err) {
+    int64_t bucket = bucket_of(in->block_time, interval);
+    uint8_t keybuf[BAR_KEY_LEN];
+    idx_slice key = bar_key(&in->pool, interval, bucket, keybuf);
+    if (!idx_map_contains(affected, key)) {
+        return IDX_OK;
+    }
+    return observe_interval(reg, in, interval, price, base_vol, quote_vol, err);
+}
+
+idx_status idx_bar_registry_recompute_range(idx_bar_registry *reg,
+                                            idx_slot from_slot,
+                                            const idx_bar_input *survivors,
+                                            size_t survivor_count,
+                                            size_t *dropped, idx_error *err) {
+    if (reg == NULL || (survivor_count > 0 && survivors == NULL)) {
+        return IDX_FAIL(err, IDX_ERR_INVALID_ARG,
+                        "reg must not be NULL, nor survivors when counted");
+    }
+    if (dropped != NULL) {
+        *dropped = 0;
+    }
+
+    /*
+     * A bar's close is its latest swap, and a sequence orders by slot first, so
+     * a bar holds a swap at or above the reorged slot exactly when its close is.
+     * Those bars may now be wrong; collect their keys as the set of buckets to
+     * clear and rebuild.
+     */
+    idx_map affected;
+    idx_map_init(&affected);
+    idx_status status = IDX_OK;
+
+    size_t cursor = 0;
+    idx_slice key;
+    void *value = NULL;
+    while (idx_map_next(&reg->by_key, &cursor, &key, &value)) {
+        const idx_bar *bar = value;
+        if (bar->close_seq.slot >= from_slot) {
+            status = idx_map_put(&affected, key, (void *)1, err);
+            if (status != IDX_OK) {
+                idx_map_free(&affected);
+                return status;
+            }
+        }
+    }
+
+    /* Clear the affected bars. Iterating the separate set leaves reg free to be
+     * modified. */
+    cursor = 0;
+    while (idx_map_next(&affected, &cursor, &key, &value)) {
+        void *bar = NULL;
+        if (idx_map_get(&reg->by_key, key, &bar)) {
+            free(bar);
+            idx_map_remove(&reg->by_key, key);
+        }
+    }
+    size_t cleared = idx_map_count(&affected);
+
+    /* Rebuild only the cleared buckets, from the swaps that survive. A survivor
+     * whose bucket was not affected is left alone — its bar was never cleared. */
+    for (size_t i = 0; i < survivor_count && status == IDX_OK; i++) {
+        const idx_bar_input *in = &survivors[i];
+        if (!input_is_foldable(in)) {
+            continue;
+        }
+        double price;
+        double base_vol;
+        double quote_vol;
+        input_metrics(in, &price, &base_vol, &quote_vol);
+        for (idx_bar_interval iv = IDX_BAR_1S; iv < IDX_BAR_INTERVAL_COUNT;
+             iv++) {
+            status = refold_if_affected(reg, &affected, in, iv, price, base_vol,
+                                        quote_vol, err);
+            if (status != IDX_OK) {
+                break;
+            }
+        }
+    }
+
+    idx_map_free(&affected);
+    if (status == IDX_OK && dropped != NULL) {
+        *dropped = cleared;
+    }
+    return status;
 }

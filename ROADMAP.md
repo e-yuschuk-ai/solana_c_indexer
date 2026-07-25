@@ -231,7 +231,14 @@ block stream carried — nothing is fetched from a node to complete a record.
       of its swaps and is what the recompute below relies on. Price is quote per
       base and volume is carried on both sides, scaled by decimals; a route (not
       a pool, D8) and an unpriced or untimed swap contribute nothing
-- [ ] Bar recomputation for a slot range, used by the reorg path (D4)
+- [x] Bar recomputation for a slot range, used by the reorg path (D4) —
+      `idx_bar_registry_recompute_range` clears every bar holding a swap at or
+      above the reorged slot and rebuilds those buckets from the swaps that
+      survive, which the caller supplies (in M7 from the confirmed tier). Only
+      cleared buckets are rebuilt, so a survivor in an untouched bucket is not
+      double-counted and a bucket whose swaps were all reorged away stays gone.
+      It is exact because a bar is a pure fold of its swaps. The reorg path that
+      calls it lives in M7; this is the derivation half it needs
 - [ ] Golden-file tests: real blocks in, expected entities out
 
 ## M7 — Storage

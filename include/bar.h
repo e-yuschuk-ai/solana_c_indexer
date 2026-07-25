@@ -116,6 +116,28 @@ void idx_bar_registry_free(idx_bar_registry *reg);
 idx_status idx_bar_registry_observe(idx_bar_registry *reg,
                                     const idx_bar_input *in, idx_error *err);
 
+/*
+ * Recomputes the bars a reorg may have invalidated (decision D4). Every bar
+ * holding a swap at or above `from_slot` is cleared, then rebuilt from
+ * `survivors` — the swaps that remain after the reorg, which the caller supplies
+ * for the affected time buckets (in M7 these come from the confirmed tier).
+ * Only cleared buckets are rebuilt, so a survivor in a bucket the reorg did not
+ * touch is left alone rather than double-counted, and a bucket whose swaps were
+ * all reorged away stays gone. `*dropped`, when not NULL, receives how many bars
+ * were cleared.
+ *
+ * This works because a bar is a pure fold of its swaps: re-folding the survivors
+ * yields exactly the bar a from-scratch derivation would.
+ *
+ *   IDX_OK             recomputed
+ *   IDX_ERR_NO_MEMORY  the registry could not grow
+ */
+idx_status idx_bar_registry_recompute_range(idx_bar_registry *reg,
+                                            idx_slot from_slot,
+                                            const idx_bar_input *survivors,
+                                            size_t survivor_count,
+                                            size_t *dropped, idx_error *err);
+
 /* The bar for `(pool, interval, bucket)`, or NULL. Borrows the registry. */
 const idx_bar *idx_bar_registry_get(const idx_bar_registry *reg,
                                     const idx_pubkey *pool,

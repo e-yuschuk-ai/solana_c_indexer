@@ -167,6 +167,106 @@ static void test_interval_names(void) {
     TEST_EQ_UINT(idx_bar_interval_seconds(IDX_BAR_1M), 60);
 }
 
+/* ---------------------------------------------------------- recompute -- */
+
+static size_t recompute(idx_bar_registry *reg, idx_slot from,
+                        const idx_bar_input *surv, size_t n) {
+    size_t dropped = 0;
+    idx_error err;
+    idx_error_clear(&err);
+    TEST_EQ_INT(
+        idx_bar_registry_recompute_range(reg, from, surv, n, &dropped, &err),
+        IDX_OK);
+    return dropped;
+}
+
+/*
+ * A reorg drops the bars holding swaps at or above the reorged slot and rebuilds
+ * them from the survivors. The 1m bar spanning the boundary is recomputed to
+ * what the surviving swaps alone imply, the 1s bar of the reorged second is gone
+ * entirely, and the 1s bars below the boundary are untouched.
+ */
+static void test_recompute_drops_and_rebuilds(void) {
+    idx_bar_registry reg;
+    idx_bar_registry_init(&reg);
+    idx_pubkey pool = key_fill(0x30);
+
+    /* Three swaps in one 1m bucket (999999960), three distinct 1s buckets. */
+    idx_bar_input s10 = input(pool, 2.0, 1000000, 500000000, 1000000000, 10, 0, 0);
+    idx_bar_input s11 = input(pool, 3.0, 1000000, 500000000, 1000000001, 11, 0, 0);
+    idx_bar_input s12 = input(pool, 5.0, 1000000, 500000000, 1000000002, 12, 0, 0);
+    TEST_EQ_INT(obs(&reg, &s10), IDX_OK);
+    TEST_EQ_INT(obs(&reg, &s11), IDX_OK);
+    TEST_EQ_INT(obs(&reg, &s12), IDX_OK);
+    /* 3x 1s + 1x 1m. */
+    TEST_EQ_UINT(idx_bar_registry_count(&reg), 4);
+
+    const idx_bar *m = idx_bar_registry_get(&reg, &pool, IDX_BAR_1M, 999999960);
+    TEST_ASSERT(close_to(m->close, 5.0) && m->swap_count == 3);
+
+    /* Reorg at slot 12: survivors are s10 and s11. */
+    idx_bar_input surv[2] = {s10, s11};
+    size_t dropped = recompute(&reg, 12, surv, 2);
+    TEST_EQ_UINT(dropped, 2); /* the 1m bar and the slot-12 1s bar */
+
+    /* The 1m bar now reflects only the survivors. */
+    m = idx_bar_registry_get(&reg, &pool, IDX_BAR_1M, 999999960);
+    TEST_ASSERT(m != NULL);
+    TEST_ASSERT(close_to(m->open, 2.0) && close_to(m->close, 3.0));
+    TEST_ASSERT(close_to(m->high, 3.0) && close_to(m->low, 2.0));
+    TEST_EQ_UINT(m->swap_count, 2);
+
+    /* The reorged second's 1s bar is gone; the earlier ones stand untouched. */
+    TEST_ASSERT(idx_bar_registry_get(&reg, &pool, IDX_BAR_1S, 1000000002) == NULL);
+    TEST_ASSERT(close_to(
+        idx_bar_registry_get(&reg, &pool, IDX_BAR_1S, 1000000000)->open, 2.0));
+    TEST_ASSERT(close_to(
+        idx_bar_registry_get(&reg, &pool, IDX_BAR_1S, 1000000001)->open, 3.0));
+
+    idx_bar_registry_free(&reg);
+}
+
+/* A reorg that rewrites the slot — a new swap replaces the reorged one — puts
+ * the replacement into the rebuilt buckets, matching a from-scratch fold. */
+static void test_recompute_with_rewrite(void) {
+    idx_bar_registry reg;
+    idx_bar_registry_init(&reg);
+    idx_pubkey pool = key_fill(0x30);
+
+    idx_bar_input s10 = input(pool, 2.0, 1000000, 500000000, 1000000000, 10, 0, 0);
+    idx_bar_input s12 = input(pool, 5.0, 1000000, 500000000, 1000000002, 12, 0, 0);
+    TEST_EQ_INT(obs(&reg, &s10), IDX_OK);
+    TEST_EQ_INT(obs(&reg, &s12), IDX_OK);
+
+    /* Reorg at 12 rewrites it: a new swap at slot 12, price 9.0, same second. */
+    idx_bar_input s12b = input(pool, 9.0, 1000000, 500000000, 1000000002, 12, 0, 0);
+    idx_bar_input surv[2] = {s10, s12b};
+    recompute(&reg, 12, surv, 2);
+
+    const idx_bar *m = idx_bar_registry_get(&reg, &pool, IDX_BAR_1M, 999999960);
+    TEST_ASSERT(close_to(m->open, 2.0) && close_to(m->close, 9.0));
+    TEST_ASSERT(close_to(m->high, 9.0) && m->swap_count == 2);
+    /* The rewritten second's 1s bar carries the replacement. */
+    const idx_bar *b2 = idx_bar_registry_get(&reg, &pool, IDX_BAR_1S, 1000000002);
+    TEST_ASSERT(b2 != NULL && close_to(b2->close, 9.0));
+
+    idx_bar_registry_free(&reg);
+}
+
+/* A reorg above every bar's slot changes nothing. */
+static void test_recompute_above_all(void) {
+    idx_bar_registry reg;
+    idx_bar_registry_init(&reg);
+    idx_pubkey pool = key_fill(0x30);
+    idx_bar_input s10 = input(pool, 2.0, 1000000, 500000000, 1000000000, 10, 0, 0);
+    TEST_EQ_INT(obs(&reg, &s10), IDX_OK);
+    size_t before = idx_bar_registry_count(&reg);
+    size_t dropped = recompute(&reg, 999, NULL, 0);
+    TEST_EQ_UINT(dropped, 0);
+    TEST_EQ_UINT(idx_bar_registry_count(&reg), before);
+    idx_bar_registry_free(&reg);
+}
+
 TEST_MAIN({
     TEST_RUN(test_ohlcv_one_bucket);
     TEST_RUN(test_1s_and_1m);
@@ -174,4 +274,7 @@ TEST_MAIN({
     TEST_RUN(test_pools_are_separate);
     TEST_RUN(test_guards);
     TEST_RUN(test_interval_names);
+    TEST_RUN(test_recompute_drops_and_rebuilds);
+    TEST_RUN(test_recompute_with_rewrite);
+    TEST_RUN(test_recompute_above_all);
 })
