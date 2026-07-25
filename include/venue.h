@@ -179,6 +179,39 @@ idx_status idx_venue_creation_decode(const idx_transaction *tx,
                                      idx_pool_creation *out, idx_error *err);
 
 /*
+ * What a venue states about a token's metadata, for the token registry (M6).
+ * D5 gets a mint's decimals free from every token balance; name, symbol and the
+ * metadata URI are only known when an instruction carrying them is observed.
+ * The strings borrow the instruction's data, so they are valid only while the
+ * block that carried it is — the registry copies what it keeps.
+ */
+typedef struct {
+    idx_pubkey mint;
+    bool has_mint;
+    idx_slice name;
+    bool has_name;
+    idx_slice symbol;
+    bool has_symbol;
+    idx_slice uri;
+    bool has_uri;
+} idx_token_metadata;
+
+/*
+ * Decodes `ix` as token metadata of whatever venue its program belongs to.
+ * pump.fun states a new token's name, symbol and URI in the same CreateEvent
+ * its curve creation is read from, which is the metadata source verified against
+ * mainnet; Metaplex Token Metadata — the general case for tokens not born on a
+ * venue — waits on the golden-file fixtures that would pin its layout.
+ *
+ *   IDX_OK             `out` holds metadata
+ *   IDX_ERR_NOT_FOUND  not a metadata instruction this knows — the common answer
+ *   IDX_ERR_RANGE      a metadata payload shorter than the fields it names
+ */
+idx_status idx_venue_metadata_decode(const idx_transaction *tx,
+                                     const idx_instruction *ix,
+                                     idx_token_metadata *out, idx_error *err);
+
+/*
  * True when `data` starts with the Anchor CPI event marker, in which case
  * `*payload` is set to everything after it: the event discriminator and its
  * fields. The venue modules use this to tell an event from an instruction.

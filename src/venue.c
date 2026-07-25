@@ -179,6 +179,32 @@ idx_status idx_swap_decode(const idx_transaction *tx, const idx_instruction *ix,
     return IDX_FAIL(err, IDX_ERR_NOT_FOUND, "not a venue program");
 }
 
+idx_status idx_venue_metadata_decode(const idx_transaction *tx,
+                                     const idx_instruction *ix,
+                                     idx_token_metadata *out, idx_error *err) {
+    if (tx == NULL || ix == NULL || out == NULL) {
+        return IDX_FAIL(err, IDX_ERR_INVALID_ARG,
+                        "tx, ix and out must not be NULL");
+    }
+    memset(out, 0, sizeof(*out));
+
+    idx_venue venue = idx_venue_of_program(idx_instruction_program_id(tx, ix));
+    switch (venue) {
+    case IDX_VENUE_PUMP_CURVE:
+        return idx_venue_pump_metadata(tx, ix, out, err);
+    case IDX_VENUE_PUMP_AMM:
+    case IDX_VENUE_RAYDIUM_AMM_V4:
+    case IDX_VENUE_RAYDIUM_CLMM:
+    case IDX_VENUE_RAYDIUM_CPMM:
+    case IDX_VENUE_JUPITER:
+    case IDX_VENUE_NONE:
+        break;
+    }
+    /* Not a venue metadata source. Metaplex Token Metadata is the general case
+     * and is not decoded yet — its layout waits on golden-file verification. */
+    return IDX_FAIL(err, IDX_ERR_NOT_FOUND, "no metadata for this instruction");
+}
+
 idx_status idx_venue_creation_decode(const idx_transaction *tx,
                                      const idx_instruction *ix,
                                      idx_pool_creation *out, idx_error *err) {

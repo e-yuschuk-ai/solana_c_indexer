@@ -197,50 +197,63 @@ bool idx_venue_pump_amm_accounts(const idx_transaction *tx,
     return true;
 }
 
-/* Skips one Borsh string: a u32 little-endian length and that many bytes. */
-static idx_status skip_borsh_string(idx_cursor *cursor, idx_error *err) {
+/* Reads one Borsh string as a borrowed slice: a u32 little-endian length and
+ * that many bytes, which stay pointing into the instruction's data. */
+static idx_status read_borsh_string(idx_cursor *cursor, idx_slice *out,
+                                    idx_error *err) {
     uint32_t len = 0;
     IDX_TRY(idx_cursor_u32le(cursor, &len, err));
-    return idx_cursor_skip(cursor, len, err);
+    return idx_cursor_take(cursor, len, out, err);
 }
 
 /*
  * The bonding curve's CreateEvent, of which this reads the leading fields:
  *
- *   name          string    the three Borsh strings are skipped, not stored;
- *   symbol        string    name/symbol/uri belong to the token registry, and
- *   uri           string    this item is the pool one
+ *   name          string    the token's display name, symbol and metadata URI,
+ *   symbol        string    which the token registry keeps and the pool one
+ *   uri           string    ignores
  *   mint          pubkey    the token; the curve's identity, since there is one
  *                           curve per mint and swaps key the curve by it
- *   bonding_curve pubkey    the curve account (skipped)
+ *   bonding_curve pubkey    the curve account (not used here)
  *   user          pubkey    the wallet that created it
  *
  * What follows — the creator field pump added later, the timestamp, the initial
  * reserves — is left alone, the same way the trade events are read by prefix.
- * `user` is taken as the creator: it is the account that signed the create and
- * the one a terminal shows as the deployer, and unlike the appended `creator`
- * field it is always present.
+ * Verified against a mainnet CreateEvent (mint …pump, name "United States Water
+ * Reserve", symbol "USWR"): the three strings then the three pubkeys, in this
+ * order. `user` is taken as the creator — the account that signed the create,
+ * the deployer a terminal shows — since unlike the appended `creator` field it
+ * is always present.
  */
-static idx_status decode_create_event(idx_slice fields, idx_pool_creation *out,
-                                      idx_error *err) {
-    idx_cursor cursor;
-    idx_cursor_init(&cursor, fields);
-
-    IDX_TRY(skip_borsh_string(&cursor, err)); /* name */
-    IDX_TRY(skip_borsh_string(&cursor, err)); /* symbol */
-    IDX_TRY(skip_borsh_string(&cursor, err)); /* uri */
-
+typedef struct {
+    idx_slice name;
+    idx_slice symbol;
+    idx_slice uri;
     idx_pubkey mint;
     idx_pubkey bonding_curve;
     idx_pubkey user;
-    IDX_TRY(idx_cursor_copy(&cursor, mint.bytes, IDX_PUBKEY_LEN, err));
-    IDX_TRY(idx_cursor_copy(&cursor, bonding_curve.bytes, IDX_PUBKEY_LEN, err));
-    IDX_TRY(idx_cursor_copy(&cursor, user.bytes, IDX_PUBKEY_LEN, err));
+} pump_create_event;
 
-    out->pool = mint;
-    out->has_pool = true;
-    out->creator = user;
-    out->has_creator = true;
+static idx_status parse_create_event(idx_slice ix_data, pump_create_event *out,
+                                     idx_error *err) {
+    idx_slice payload;
+    if (!idx_anchor_event_payload(ix_data, &payload)) {
+        return IDX_FAIL(err, IDX_ERR_NOT_FOUND, "not an anchor event");
+    }
+    idx_slice fields;
+    if (!idx_anchor_event_is(payload, CREATE_EVENT, &fields)) {
+        return IDX_FAIL(err, IDX_ERR_NOT_FOUND, "not a create event");
+    }
+
+    idx_cursor cursor;
+    idx_cursor_init(&cursor, fields);
+    IDX_TRY(read_borsh_string(&cursor, &out->name, err));
+    IDX_TRY(read_borsh_string(&cursor, &out->symbol, err));
+    IDX_TRY(read_borsh_string(&cursor, &out->uri, err));
+    IDX_TRY(idx_cursor_copy(&cursor, out->mint.bytes, IDX_PUBKEY_LEN, err));
+    IDX_TRY(idx_cursor_copy(&cursor, out->bonding_curve.bytes, IDX_PUBKEY_LEN,
+                            err));
+    IDX_TRY(idx_cursor_copy(&cursor, out->user.bytes, IDX_PUBKEY_LEN, err));
     return IDX_OK;
 }
 
@@ -254,15 +267,35 @@ idx_status idx_venue_pump_creation(const idx_transaction *tx,
     memset(out, 0, sizeof(*out));
     out->venue = IDX_VENUE_PUMP_CURVE;
 
-    idx_slice payload;
-    if (!idx_anchor_event_payload(ix->data, &payload)) {
-        return IDX_FAIL(err, IDX_ERR_NOT_FOUND, "not an anchor event");
+    pump_create_event event;
+    IDX_TRY(parse_create_event(ix->data, &event, err));
+    out->pool = event.mint;
+    out->has_pool = true;
+    out->creator = event.user;
+    out->has_creator = true;
+    return IDX_OK;
+}
+
+idx_status idx_venue_pump_metadata(const idx_transaction *tx,
+                                   const idx_instruction *ix,
+                                   idx_token_metadata *out, idx_error *err) {
+    if (tx == NULL || ix == NULL || out == NULL) {
+        return IDX_FAIL(err, IDX_ERR_INVALID_ARG,
+                        "tx, ix and out must not be NULL");
     }
-    idx_slice fields;
-    if (!idx_anchor_event_is(payload, CREATE_EVENT, &fields)) {
-        return IDX_FAIL(err, IDX_ERR_NOT_FOUND, "not a create event");
-    }
-    return decode_create_event(fields, out, err);
+    memset(out, 0, sizeof(*out));
+
+    pump_create_event event;
+    IDX_TRY(parse_create_event(ix->data, &event, err));
+    out->mint = event.mint;
+    out->has_mint = true;
+    out->name = event.name;
+    out->has_name = !idx_slice_is_empty(event.name);
+    out->symbol = event.symbol;
+    out->has_symbol = !idx_slice_is_empty(event.symbol);
+    out->uri = event.uri;
+    out->has_uri = !idx_slice_is_empty(event.uri);
+    return IDX_OK;
 }
 
 idx_status idx_venue_pump_decode(const idx_transaction *tx,

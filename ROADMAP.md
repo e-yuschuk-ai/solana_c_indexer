@@ -211,8 +211,17 @@ block stream carried — nothing is fetched from a node to complete a record.
       their swaps but are not creation-enriched yet, which waits on the
       golden-file fixtures below to verify each creation layout against a real
       block rather than an IDL
-- [ ] Token registry: address and decimals from balances, name, symbol and
-      metadata URI from metadata instructions when observed
+- [x] Token registry: address and decimals from balances, name, symbol and
+      metadata URI from metadata instructions when observed — `idx_token_registry`
+      keys a token dimension by mint. Address and decimals come free from every
+      token balance (D5); name, symbol and the URI are read from the pump.fun
+      CreateEvent, whose layout was verified against a mainnet token (mint
+      …pump, "United States Water Reserve"/"USWR"). The URI is stored
+      unresolved — it points off-chain and resolving it is a consumer's job
+      (D5). Metaplex Token Metadata, the general case for tokens not born on a
+      venue, is not decoded yet: recent mainnet blocks scanned while building
+      this carried no `CreateMetadataAccountV3` to verify its layout against, so
+      it waits on the golden-file fixtures below rather than going in from an IDL
 - [ ] Bar derivation per pool at 1s and 1m, keyed `(pool, bucket)`
 - [ ] Bar recomputation for a slot range, used by the reorg path (D4)
 - [ ] Golden-file tests: real blocks in, expected entities out

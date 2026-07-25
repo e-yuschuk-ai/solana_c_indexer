@@ -15,6 +15,7 @@
 #include "price.h"
 #include "slot_cursor.h"
 #include "swap.h"
+#include "token.h"
 #include "transfer.h"
 #include "venue.h"
 #include "version.h"
@@ -63,6 +64,10 @@ typedef struct {
     /* The pool dimension, accumulated across the whole run. */
     idx_pool_registry pools;
     uint64_t pool_creations; /* creation instructions decoded */
+
+    /* The token dimension, likewise. */
+    idx_token_registry tokens;
+    uint64_t token_metadata; /* metadata instructions decoded */
 } idx_tally;
 
 /*
@@ -107,15 +112,39 @@ static idx_status normalize_swaps(const idx_transaction *tx, idx_arena *arena,
 }
 
 /*
- * Enriches the pool registry from any creation instructions the transaction
- * carries. Run after the swaps of the same transaction are observed, so a pool
- * created and first traded in one transaction — the common pump.fun case — is
- * already registered by the time its creation is seen (D5). Walks the inner
+ * Enriches the pool and token registries from any creation and metadata
+ * instructions one instruction carries. Both are read from the same places — a
+ * pump CreateEvent is both — so one walk feeds both dimensions.
+ */
+static idx_status observe_dimensions_ix(const idx_transaction *tx,
+                                        const idx_instruction *ix,
+                                        idx_tally *tally, idx_slot slot,
+                                        idx_error *err) {
+    idx_pool_creation creation;
+    if (idx_venue_creation_decode(tx, ix, &creation, NULL) == IDX_OK) {
+        tally->pool_creations++;
+        IDX_TRY(idx_pool_registry_observe_creation(&tally->pools, &creation,
+                                                   slot, err));
+    }
+    idx_token_metadata meta;
+    if (idx_venue_metadata_decode(tx, ix, &meta, NULL) == IDX_OK) {
+        tally->token_metadata++;
+        IDX_TRY(idx_token_registry_observe_metadata(&tally->tokens, &meta, slot,
+                                                    err));
+    }
+    return IDX_OK;
+}
+
+/*
+ * Enriches the dimensions from a transaction's creation and metadata
+ * instructions. Run after the swaps of the same transaction are observed, so a
+ * pool created and first traded in one transaction — the common pump.fun case —
+ * is already registered by the time its creation is seen (D5). Walks the inner
  * instructions too, since an Anchor creation event is a self-invoke that lands
  * there.
  */
-static idx_status observe_creations(const idx_transaction *tx, idx_tally *tally,
-                                    idx_slot slot, idx_error *err) {
+static idx_status observe_dimensions(const idx_transaction *tx, idx_tally *tally,
+                                     idx_slot slot, idx_error *err) {
     /* A rolled-back transaction created nothing, and without meta the CPI event
      * a creation is read from was never delivered — either way, nothing to
      * observe, the same guard the swap path applies. */
@@ -123,24 +152,14 @@ static idx_status observe_creations(const idx_transaction *tx, idx_tally *tally,
         return IDX_OK;
     }
     for (size_t i = 0; i < tx->instruction_count; i++) {
-        idx_pool_creation creation;
-        if (idx_venue_creation_decode(tx, &tx->instructions[i], &creation,
-                                      NULL) == IDX_OK) {
-            tally->pool_creations++;
-            IDX_TRY(idx_pool_registry_observe_creation(&tally->pools, &creation,
-                                                       slot, err));
-        }
+        IDX_TRY(observe_dimensions_ix(tx, &tx->instructions[i], tally, slot,
+                                      err));
     }
     for (size_t g = 0; g < tx->inner_instruction_count; g++) {
         const idx_inner_instructions *group = &tx->inner_instructions[g];
         for (size_t j = 0; j < group->instruction_count; j++) {
-            idx_pool_creation creation;
-            if (idx_venue_creation_decode(tx, &group->instructions[j], &creation,
-                                          NULL) == IDX_OK) {
-                tally->pool_creations++;
-                IDX_TRY(idx_pool_registry_observe_creation(
-                    &tally->pools, &creation, slot, err));
-            }
+            IDX_TRY(observe_dimensions_ix(tx, &group->instructions[j], tally,
+                                          slot, err));
         }
     }
     return IDX_OK;
@@ -312,6 +331,20 @@ static idx_status count_block(const idx_raw_block *block, void *user,
         }
         token_balances += token_state_count;
 
+        /* Every token balance names a mint and its decimals, so the token
+         * dimension is populated here at no extra decoding cost (D5). */
+        for (size_t j = 0; j < token_state_count; j++) {
+            status = idx_token_registry_observe_balance(
+                &tally->tokens, &token_states[j].mint, token_states[j].decimals,
+                block->slot, err);
+            if (status != IDX_OK) {
+                IDX_WARN("slot %llu: token registry failed: %s",
+                         (unsigned long long)block->slot,
+                         (err != NULL) ? err->message : "");
+                return status;
+            }
+        }
+
         const idx_transfer *moves = NULL;
         size_t move_count = 0;
         status = idx_transfer_extract(tx, block->arena, &moves, &move_count,
@@ -341,9 +374,9 @@ static idx_status count_block(const idx_raw_block *block, void *user,
             return status;
         }
 
-        status = observe_creations(tx, tally, block->slot, err);
+        status = observe_dimensions(tx, tally, block->slot, err);
         if (status != IDX_OK) {
-            IDX_WARN("slot %llu: pool creation failed: %s",
+            IDX_WARN("slot %llu: dimension enrichment failed: %s",
                      (unsigned long long)block->slot,
                      (err != NULL) ? err->message : "");
             return status;
@@ -420,6 +453,7 @@ int main(int argc, char **argv) {
     idx_tally tally;
     memset(&tally, 0, sizeof(tally));
     idx_pool_registry_init(&tally.pools);
+    idx_token_registry_init(&tally.tokens);
 
     /* The set the handler prices against. Already validated as parseable by
      * idx_config_validate, so this only fails on an internal error. */
@@ -512,6 +546,11 @@ int main(int argc, char **argv) {
              (unsigned long long)tally.pools.enriched,
              (unsigned long long)tally.pool_creations,
              (unsigned long long)tally.pools.creations_unmatched);
+    IDX_INFO("tokens: %zu distinct (%llu with metadata, %llu metadata "
+             "instructions seen)",
+             idx_token_registry_count(&tally.tokens),
+             (unsigned long long)tally.tokens.with_metadata,
+             (unsigned long long)tally.token_metadata);
     IDX_INFO("skipped=%llu missed=%llu reconnects=%llu socket=%.1f MiB",
              (unsigned long long)stats.slots_skipped,
              (unsigned long long)stats.slots_missed,
@@ -550,6 +589,7 @@ int main(int argc, char **argv) {
     g_pipeline = NULL;
     idx_pipeline_close(pipeline);
     idx_pool_registry_free(&tally.pools);
+    idx_token_registry_free(&tally.tokens);
 
     if (status != IDX_OK) {
         IDX_ERROR("%s", err.message);

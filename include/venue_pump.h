@@ -86,4 +86,17 @@ idx_status idx_venue_pump_creation(const idx_transaction *tx,
                                    const idx_instruction *ix,
                                    idx_pool_creation *out, idx_error *err);
 
+/*
+ * Decodes `ix` as a pump.fun token's metadata, read from the same CreateEvent as
+ * the creation above: the event carries the token's name, symbol and URI, which
+ * is where a pump token's metadata is stated. The strings borrow `ix`'s data.
+ *
+ *   IDX_OK             `out` holds metadata
+ *   IDX_ERR_NOT_FOUND  not a CreateEvent
+ *   IDX_ERR_RANGE      a CreateEvent shorter than the fields read here
+ */
+idx_status idx_venue_pump_metadata(const idx_transaction *tx,
+                                   const idx_instruction *ix,
+                                   idx_token_metadata *out, idx_error *err);
+
 #endif /* IDX_VENUE_PUMP_H */
