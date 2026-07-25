@@ -197,8 +197,20 @@ block stream carried — nothing is fetched from a node to complete a record.
       from the swap row alone (decisions D5, D10). A swap between two quotes is
       priced in the higher-priority one; a swap with no quote side stays
       unpriced
-- [ ] Pool registry: structure learned from the first observed swap, enriched
-      by a creation instruction when one is seen
+- [x] Pool registry: structure learned from the first observed swap, enriched
+      by a creation instruction when one is seen — `idx_pool_registry`
+      accumulates a pool dimension across blocks (D5), keyed by pool address,
+      with the venue, the two mints and their decimals taken from the first swap
+      that names each and completed by later ones (mints matched by identity, so
+      a buy and a sell land on the same pair). A creation only enriches a record
+      a swap already made, never creates one; a creation for an untraded pool is
+      dropped and counted. Creation decoding is the pump.fun curve `CreateEvent`
+      so far — the venue with by far the most pool births — read from the event
+      for the same reason trades are (stable across upgrades); its creator field
+      is the enrichment a swap cannot supply. The other venues register from
+      their swaps but are not creation-enriched yet, which waits on the
+      golden-file fixtures below to verify each creation layout against a real
+      block rather than an IDL
 - [ ] Token registry: address and decimals from balances, name, symbol and
       metadata URI from metadata instructions when observed
 - [ ] Bar derivation per pool at 1s and 1m, keyed `(pool, bucket)`

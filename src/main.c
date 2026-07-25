@@ -11,6 +11,7 @@
 #include "error.h"
 #include "log.h"
 #include "pipeline.h"
+#include "pool.h"
 #include "price.h"
 #include "slot_cursor.h"
 #include "swap.h"
@@ -58,6 +59,10 @@ typedef struct {
     idx_quote_set quotes;
     uint64_t priced; /* rows (pool or route) that yielded a price */
     uint64_t priced_by_quote[IDX_QUOTE_OTHER + 1];
+
+    /* The pool dimension, accumulated across the whole run. */
+    idx_pool_registry pools;
+    uint64_t pool_creations; /* creation instructions decoded */
 } idx_tally;
 
 /*
@@ -69,7 +74,8 @@ typedef struct {
  * counted by quote, which is what shows the price step reaching live swaps.
  */
 static idx_status normalize_swaps(const idx_transaction *tx, idx_arena *arena,
-                                  idx_tally *tally, idx_error *err) {
+                                  idx_tally *tally, idx_slot slot,
+                                  idx_error *err) {
     const idx_swap_row *rows = NULL;
     size_t count = 0;
     IDX_TRY(idx_swap_normalize(tx, arena, &rows, &count, err));
@@ -82,6 +88,11 @@ static idx_status normalize_swaps(const idx_transaction *tx, idx_arena *arena,
             tally->priced_by_quote[price.quote]++;
         }
 
+        /* The pool dimension is learned here, from the first swap that names a
+         * pool and enriched by every one after (D5). A route row is not a pool,
+         * and the registry drops it on the kind check. */
+        IDX_TRY(idx_pool_registry_observe_swap(&tally->pools, row, slot, err));
+
         if (row->kind == IDX_SWAP_AGGREGATED) {
             tally->routes++;
             continue;
@@ -90,6 +101,46 @@ static idx_status normalize_swaps(const idx_transaction *tx, idx_arena *arena,
         if (row->has_input_mint && row->has_output_mint &&
             row->has_input_amount && row->has_output_amount) {
             tally->resolved++;
+        }
+    }
+    return IDX_OK;
+}
+
+/*
+ * Enriches the pool registry from any creation instructions the transaction
+ * carries. Run after the swaps of the same transaction are observed, so a pool
+ * created and first traded in one transaction — the common pump.fun case — is
+ * already registered by the time its creation is seen (D5). Walks the inner
+ * instructions too, since an Anchor creation event is a self-invoke that lands
+ * there.
+ */
+static idx_status observe_creations(const idx_transaction *tx, idx_tally *tally,
+                                    idx_slot slot, idx_error *err) {
+    /* A rolled-back transaction created nothing, and without meta the CPI event
+     * a creation is read from was never delivered — either way, nothing to
+     * observe, the same guard the swap path applies. */
+    if (!tx->has_meta || !tx->success) {
+        return IDX_OK;
+    }
+    for (size_t i = 0; i < tx->instruction_count; i++) {
+        idx_pool_creation creation;
+        if (idx_venue_creation_decode(tx, &tx->instructions[i], &creation,
+                                      NULL) == IDX_OK) {
+            tally->pool_creations++;
+            IDX_TRY(idx_pool_registry_observe_creation(&tally->pools, &creation,
+                                                       slot, err));
+        }
+    }
+    for (size_t g = 0; g < tx->inner_instruction_count; g++) {
+        const idx_inner_instructions *group = &tx->inner_instructions[g];
+        for (size_t j = 0; j < group->instruction_count; j++) {
+            idx_pool_creation creation;
+            if (idx_venue_creation_decode(tx, &group->instructions[j], &creation,
+                                          NULL) == IDX_OK) {
+                tally->pool_creations++;
+                IDX_TRY(idx_pool_registry_observe_creation(
+                    &tally->pools, &creation, slot, err));
+            }
         }
     }
     return IDX_OK;
@@ -282,9 +333,17 @@ static idx_status count_block(const idx_raw_block *block, void *user,
             }
         }
 
-        status = normalize_swaps(tx, block->arena, tally, err);
+        status = normalize_swaps(tx, block->arena, tally, block->slot, err);
         if (status != IDX_OK) {
             IDX_WARN("slot %llu: swap normalization failed: %s",
+                     (unsigned long long)block->slot,
+                     (err != NULL) ? err->message : "");
+            return status;
+        }
+
+        status = observe_creations(tx, tally, block->slot, err);
+        if (status != IDX_OK) {
+            IDX_WARN("slot %llu: pool creation failed: %s",
                      (unsigned long long)block->slot,
                      (err != NULL) ? err->message : "");
             return status;
@@ -360,6 +419,7 @@ int main(int argc, char **argv) {
 
     idx_tally tally;
     memset(&tally, 0, sizeof(tally));
+    idx_pool_registry_init(&tally.pools);
 
     /* The set the handler prices against. Already validated as parseable by
      * idx_config_validate, so this only fails on an internal error. */
@@ -446,6 +506,12 @@ int main(int argc, char **argv) {
                      (unsigned long long)tally.priced_by_quote[quote]);
         }
     }
+    IDX_INFO("pools: %zu distinct (%llu enriched by a creation, %llu creations "
+             "seen, %llu for untraded pools)",
+             idx_pool_registry_count(&tally.pools),
+             (unsigned long long)tally.pools.enriched,
+             (unsigned long long)tally.pool_creations,
+             (unsigned long long)tally.pools.creations_unmatched);
     IDX_INFO("skipped=%llu missed=%llu reconnects=%llu socket=%.1f MiB",
              (unsigned long long)stats.slots_skipped,
              (unsigned long long)stats.slots_missed,
@@ -483,6 +549,7 @@ int main(int argc, char **argv) {
 
     g_pipeline = NULL;
     idx_pipeline_close(pipeline);
+    idx_pool_registry_free(&tally.pools);
 
     if (status != IDX_OK) {
         IDX_ERROR("%s", err.message);

@@ -71,4 +71,19 @@ bool idx_venue_pump_amm_accounts(const idx_transaction *tx,
                                  const idx_instruction *ix,
                                  idx_pump_amm_accounts *out);
 
+/*
+ * Decodes `ix` as a pump.fun bonding-curve creation, read from the `CreateEvent`
+ * the `create` instruction emits. The curve's pool identity is the token mint
+ * (there is one curve per mint, and normalization keys the curve's swaps by the
+ * mint too), so the enrichment a creation adds over the first swap is the
+ * creator wallet.
+ *
+ *   IDX_OK             `out` holds a creation
+ *   IDX_ERR_NOT_FOUND  not a CreateEvent
+ *   IDX_ERR_RANGE      a CreateEvent shorter than the fields read here
+ */
+idx_status idx_venue_pump_creation(const idx_transaction *tx,
+                                   const idx_instruction *ix,
+                                   idx_pool_creation *out, idx_error *err);
+
 #endif /* IDX_VENUE_PUMP_H */

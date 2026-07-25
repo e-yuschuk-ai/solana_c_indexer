@@ -147,6 +147,38 @@ idx_status idx_swap_decode(const idx_transaction *tx, const idx_instruction *ix,
                            idx_swap *out, idx_error *err);
 
 /*
+ * What a venue states about a pool being created, for the pool registry (M6).
+ * A pool's structure is learned from the first swap observed; a creation only
+ * enriches a record that already exists (decision D5), so this carries just the
+ * facts a swap cannot: the pool's identity and who created it. Everything is
+ * optional but `venue`, the same as `idx_swap`.
+ */
+typedef struct {
+    idx_venue venue;
+    idx_pubkey pool; /* the pool account, the mint for a pump curve */
+    bool has_pool;
+    idx_pubkey creator; /* the wallet that created the pool */
+    bool has_creator;
+} idx_pool_creation;
+
+/*
+ * Decodes `ix` as the creation of a pool of whatever venue its program belongs
+ * to. Creations are read from the venue's own CPI event where it emits one, for
+ * the same reason trades are (venue.h): the event is stable across the
+ * account-order changes an upgrade brings.
+ *
+ *   IDX_OK             `out` holds a creation
+ *   IDX_ERR_NOT_FOUND  not a creation this knows — the common answer, and not a
+ *                      failure: most instructions are not pool creations, and
+ *                      not every venue's creation is decoded yet
+ *   IDX_ERR_RANGE      a creation event this recognised is shorter than the
+ *                      fields it names
+ */
+idx_status idx_venue_creation_decode(const idx_transaction *tx,
+                                     const idx_instruction *ix,
+                                     idx_pool_creation *out, idx_error *err);
+
+/*
  * True when `data` starts with the Anchor CPI event marker, in which case
  * `*payload` is set to everything after it: the event discriminator and its
  * fields. The venue modules use this to tell an event from an instruction.
