@@ -256,7 +256,17 @@ Two tiers per decision D4: PostgreSQL for `confirmed`, ClickHouse for
 `finalized`. Sized for the ~2600 transactions/s that D1a commits to, less
 whatever the vote filter removes. The entities are the ones D5 names.
 
-- [ ] Storage abstraction layer, one interface per tier
+- [x] Storage abstraction layer, one interface per tier — `idx_store` defines
+      the write-set vocabulary (the D5 entities, addressed with the slot,
+      transaction index and signature the event rows do not carry) and two
+      vtable interfaces, because the tiers are not one shape (D4): the confirmed
+      one is mutable, with `write`, `reorg` (delete at or above a slot then
+      rewrite, atomically), `prune` (retention) and `read_range` (the promotion
+      source); the finalized one is append-only, with just `append` and
+      `flush`. The libpq and ClickHouse clients below fill in the vtables; the
+      pipeline holds only the handles. An in-memory reference backend of each
+      tier ships with it — the executable spec a real backend is contract-tested
+      against, and what lets the pipeline run with no database attached
 - [ ] PostgreSQL client over libpq: connection handling, prepared statements
 - [ ] Confirmed schema, indexed by slot: balances, transfers, swaps, bars,
       plus the pool and token dimensions
