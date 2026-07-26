@@ -711,6 +711,32 @@ static idx_status store_reorg(void *ctx, idx_slot from_slot,
     return idx_pg_commit(s->conn, err);
 }
 
+/*
+ * Retention (D4): drop every row below `below_slot`. The store is the mechanism;
+ * the policy — how far below the finalized watermark is safe, once those rows
+ * have been promoted — is the caller's, expressed in its choice of slot
+ * (store.h). The deletes run as one multi-statement command, which libpq wraps
+ * in a single implicit transaction. `below_slot` is a uint64 formatted straight
+ * into the SQL, so there is nothing to quote.
+ */
+static idx_status store_prune(void *ctx, idx_slot below_slot, idx_error *err) {
+    pg_store *s = ctx;
+    unsigned long long b = (unsigned long long)below_slot;
+    char sql[1024];
+    snprintf(sql, sizeof sql,
+             "DELETE FROM blocks WHERE slot < %llu;"
+             "DELETE FROM sol_balances WHERE slot < %llu;"
+             "DELETE FROM token_balances WHERE slot < %llu;"
+             "DELETE FROM sol_transfers WHERE slot < %llu;"
+             "DELETE FROM token_transfers WHERE slot < %llu;"
+             "DELETE FROM swaps WHERE slot < %llu;"
+             "DELETE FROM pools WHERE first_seen_slot < %llu;"
+             "DELETE FROM tokens WHERE first_seen_slot < %llu;"
+             "DELETE FROM bars WHERE close_seq_slot < %llu",
+             b, b, b, b, b, b, b, b, b);
+    return idx_pg_exec(s->conn, sql, NULL, err);
+}
+
 static void store_close(void *ctx) {
     pg_store *s = ctx;
     if (s != NULL) {
@@ -723,9 +749,9 @@ static const idx_confirmed_store_vt g_vt = {
     .name = store_name,
     .write = store_write,
     .reorg = store_reorg,
-    /* prune (retention) and read_range (promotion) are their own M7 items;
-     * until then the store.h dispatch reports them unsupported rather than
-     * misbehaving. */
+    .prune = store_prune,
+    /* read_range (promotion) is its own M7 item; until then the store.h
+     * dispatch reports it unsupported rather than misbehaving. */
     .close = store_close,
 };
 

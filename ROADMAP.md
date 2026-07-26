@@ -310,7 +310,13 @@ whatever the vote filter removes. The entities are the ones D5 names.
       replacement already folded, which is what makes the delete-then-rewrite
       exact and keeps the store a pure sink. A reader never sees a half-applied
       reorg. Verified against PostgreSQL 17
-- [ ] Retention: drop confirmed rows once promoted and past a safety margin
+- [x] Retention: drop confirmed rows once promoted and past a safety margin —
+      `store_prune` (`src/pg_store.c`) deletes every row below a given slot from
+      all tables in one multi-statement command. The store is the mechanism; the
+      policy — how far below the finalized watermark is safe, once those rows are
+      promoted — is the caller's, applied through its choice of slot (the
+      promotion path, a later item, supplies it). The slot index on every table
+      is what makes this a range delete rather than a scan (D4)
 - [ ] ClickHouse HTTP client: query, insert, error and exception-code handling
 - [ ] `RowBinary` serialization for the insert path (`JSONEachRow` for
       development and debugging)

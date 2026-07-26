@@ -329,9 +329,15 @@ static void test_online(void) {
     TEST_EQ_UINT(table_count(raw, "sol_balances"), 0);  /* none replaced */
     TEST_EQ_UINT(table_count(raw, "sol_transfers"), 0); /* deleted, not re-added */
 
-    /* -------- prune (retention) is still its own item -------- */
-    TEST_EQ_INT(idx_confirmed_store_prune(store, 100, &err),
-                IDX_ERR_INVALID_ARG);
+    /* -------- prune (retention) drops below a slot -------- */
+    /* State: the replacement left a block and a swap at slot 100. Pruning at
+     * 100 keeps slot >= 100, so nothing goes; pruning at 101 drops them. */
+    TEST_EQ_INT(idx_confirmed_store_prune(store, 100, &err), IDX_OK);
+    TEST_EQ_UINT(table_count(raw, "blocks"), 1);
+    TEST_EQ_UINT(table_count(raw, "swaps"), 1);
+    TEST_EQ_INT(idx_confirmed_store_prune(store, 101, &err), IDX_OK);
+    TEST_EQ_UINT(table_count(raw, "blocks"), 0);
+    TEST_EQ_UINT(table_count(raw, "swaps"), 0);
 
     /* Clean up so a rerun starts fresh. */
     for (size_t i = 0; i < sizeof g_tables / sizeof g_tables[0]; i++) {
