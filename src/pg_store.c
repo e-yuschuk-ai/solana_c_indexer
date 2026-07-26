@@ -295,7 +295,31 @@ static const stmt_def g_stmts[] = {
      " close_seq_key=greatest(bars.close_seq_key, excluded.close_seq_key),"
      " close_seq_slot=greatest(bars.close_seq_slot, excluded.close_seq_slot)",
      14},
+
+    /* Reorg deletes (D4): everything at or above the reorged slot. State and
+     * event tables delete by `slot`, the dimensions by their first-seen slot,
+     * and bars by the slot of their latest swap (close_seq_slot) — a bar holds
+     * a reorged swap exactly when that is at or above the cut. */
+    {"del_blocks", "DELETE FROM blocks WHERE slot >= $1::bigint", 1},
+    {"del_sol_balances", "DELETE FROM sol_balances WHERE slot >= $1::bigint", 1},
+    {"del_token_balances",
+     "DELETE FROM token_balances WHERE slot >= $1::bigint", 1},
+    {"del_sol_transfers", "DELETE FROM sol_transfers WHERE slot >= $1::bigint",
+     1},
+    {"del_token_transfers",
+     "DELETE FROM token_transfers WHERE slot >= $1::bigint", 1},
+    {"del_swaps", "DELETE FROM swaps WHERE slot >= $1::bigint", 1},
+    {"del_pools", "DELETE FROM pools WHERE first_seen_slot >= $1::bigint", 1},
+    {"del_tokens", "DELETE FROM tokens WHERE first_seen_slot >= $1::bigint", 1},
+    {"del_bars", "DELETE FROM bars WHERE close_seq_slot >= $1::bigint", 1},
 };
+
+/* The reorg deletes, in the order store_reorg runs them (any order is correct;
+ * there are no foreign keys between the tables). */
+static const char *const g_reorg_deletes[] = {
+    "del_blocks",        "del_sol_balances",   "del_token_balances",
+    "del_sol_transfers", "del_token_transfers", "del_swaps",
+    "del_pools",         "del_tokens",          "del_bars"};
 
 #define STMT_COUNT (sizeof(g_stmts) / sizeof(g_stmts[0]))
 
@@ -609,20 +633,19 @@ static idx_status put_bar(pg_store *s, const idx_bar *b, idx_error *err) {
     return put(s, "put_bar", 14, v, err);
 }
 
-static idx_status store_write(void *ctx, const idx_store_write_set *set,
-                              idx_error *err) {
-    pg_store *s = ctx;
-    IDX_TRY(idx_pg_begin(s->conn, err));
+/* Applies every row of `set` with no transaction of its own, returning the
+ * first failure so the caller can roll its transaction back. */
+static idx_status apply_write_set(pg_store *s, const idx_store_write_set *set,
+                                  idx_error *err) {
+    if (set == NULL) {
+        return IDX_OK;
+    }
 
-#define WRITE_ALL(array, count, fn)                              \
-    do {                                                         \
-        for (size_t i = 0; i < (set->count); i++) {              \
-            idx_status st = fn(s, &set->array[i], err);          \
-            if (st != IDX_OK) {                                  \
-                idx_pg_rollback(s->conn, NULL);                  \
-                return st;                                       \
-            }                                                    \
-        }                                                        \
+#define WRITE_ALL(array, count, fn)                    \
+    do {                                               \
+        for (size_t i = 0; i < (set->count); i++) {    \
+            IDX_TRY(fn(s, &set->array[i], err));        \
+        }                                              \
     } while (0)
 
     WRITE_ALL(blocks, block_count, put_block);
@@ -631,13 +654,9 @@ static idx_status store_write(void *ctx, const idx_store_write_set *set,
     /* Transfers split by kind (D5): SOL to one table, the rest to the other. */
     for (size_t i = 0; i < set->transfer_count; i++) {
         const idx_store_transfer_row *r = &set->transfers[i];
-        idx_status st = r->transfer.kind == IDX_TRANSFER_SOL
-                            ? put_sol_transfer(s, r, err)
-                            : put_token_transfer(s, r, err);
-        if (st != IDX_OK) {
-            idx_pg_rollback(s->conn, NULL);
-            return st;
-        }
+        IDX_TRY(r->transfer.kind == IDX_TRANSFER_SOL
+                    ? put_sol_transfer(s, r, err)
+                    : put_token_transfer(s, r, err));
     }
     WRITE_ALL(swaps, swap_count, put_swap);
     WRITE_ALL(pools, pool_count, put_pool);
@@ -645,6 +664,50 @@ static idx_status store_write(void *ctx, const idx_store_write_set *set,
     WRITE_ALL(bars, bar_count, put_bar);
 #undef WRITE_ALL
 
+    return IDX_OK;
+}
+
+static idx_status store_write(void *ctx, const idx_store_write_set *set,
+                              idx_error *err) {
+    pg_store *s = ctx;
+    IDX_TRY(idx_pg_begin(s->conn, err));
+    idx_status st = apply_write_set(s, set, err);
+    if (st != IDX_OK) {
+        idx_pg_rollback(s->conn, NULL);
+        return st;
+    }
+    return idx_pg_commit(s->conn, err);
+}
+
+/*
+ * Reorg in one transaction (D4): delete every row at or above `from_slot`, then
+ * apply the caller's replacement — which already carries the bars it recomputed
+ * for the affected buckets (store.h) — so a reader never sees a half-applied
+ * reorg. A NULL replacement is a pure delete.
+ */
+static idx_status store_reorg(void *ctx, idx_slot from_slot,
+                              const idx_store_write_set *replacement,
+                              idx_error *err) {
+    pg_store *s = ctx;
+    char slot[NUM_BUF];
+    u64_str(from_slot, slot);
+    const char *p[1] = {slot};
+
+    IDX_TRY(idx_pg_begin(s->conn, err));
+    for (size_t i = 0; i < sizeof g_reorg_deletes / sizeof g_reorg_deletes[0];
+         i++) {
+        idx_status st =
+            idx_pg_exec_prepared(s->conn, g_reorg_deletes[i], 1, p, NULL, err);
+        if (st != IDX_OK) {
+            idx_pg_rollback(s->conn, NULL);
+            return st;
+        }
+    }
+    idx_status st = apply_write_set(s, replacement, err);
+    if (st != IDX_OK) {
+        idx_pg_rollback(s->conn, NULL);
+        return st;
+    }
     return idx_pg_commit(s->conn, err);
 }
 
@@ -659,8 +722,10 @@ static void store_close(void *ctx) {
 static const idx_confirmed_store_vt g_vt = {
     .name = store_name,
     .write = store_write,
-    /* reorg, prune and read_range are their own M7 items; until then the
-     * store.h dispatch reports them unsupported rather than misbehaving. */
+    .reorg = store_reorg,
+    /* prune (retention) and read_range (promotion) are their own M7 items;
+     * until then the store.h dispatch reports them unsupported rather than
+     * misbehaving. */
     .close = store_close,
 };
 

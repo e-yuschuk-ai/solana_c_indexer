@@ -300,9 +300,36 @@ static void test_online(void) {
     TEST_EQ_UINT(
         (uint64_t)scalar_double(raw, "SELECT swap_count FROM bars"), 2);
 
-    /* -------- the unimplemented operations report unsupported -------- */
-    TEST_EQ_INT(idx_confirmed_store_reorg(store, 100, NULL, &err),
-                IDX_ERR_INVALID_ARG);
+    /* -------- reorg: delete at or above a slot, atomically -------- */
+    /* State right now: sol_balances holds account 1 at slot 101 (7777) and
+     * account 2 at slot 100; the bar's latest swap is at slot 101. */
+    TEST_EQ_UINT(table_count(raw, "sol_balances"), 2);
+    TEST_EQ_UINT(table_count(raw, "bars"), 1);
+
+    /* A pure delete from slot 101 drops the slot-101 balance and the bar (its
+     * close is at slot 101), leaving the slot-100 rows. */
+    TEST_EQ_INT(idx_confirmed_store_reorg(store, 101, NULL, &err), IDX_OK);
+    TEST_EQ_UINT(table_count(raw, "sol_balances"), 1); /* account 2 @ 100 */
+    TEST_EQ_UINT(table_count(raw, "bars"), 0);
+    TEST_EQ_UINT(table_count(raw, "blocks"), 1); /* slot 100 untouched */
+
+    /* A reorg from slot 100 with a replacement: everything at 100 goes, then
+     * the corrected rows are applied — in one transaction. */
+    idx_store_block_row rblock = block_row(100);
+    idx_store_swap_row rswap = swap_row(100, 7, true);
+    idx_store_write_set repl;
+    idx_store_write_set_init(&repl);
+    repl.blocks = &rblock;
+    repl.block_count = 1;
+    repl.swaps = &rswap;
+    repl.swap_count = 1;
+    TEST_EQ_INT(idx_confirmed_store_reorg(store, 100, &repl, &err), IDX_OK);
+    TEST_EQ_UINT(table_count(raw, "blocks"), 1);        /* the replacement's */
+    TEST_EQ_UINT(table_count(raw, "swaps"), 1);         /* only the new one */
+    TEST_EQ_UINT(table_count(raw, "sol_balances"), 0);  /* none replaced */
+    TEST_EQ_UINT(table_count(raw, "sol_transfers"), 0); /* deleted, not re-added */
+
+    /* -------- prune (retention) is still its own item -------- */
     TEST_EQ_INT(idx_confirmed_store_prune(store, 100, &err),
                 IDX_ERR_INVALID_ARG);
 

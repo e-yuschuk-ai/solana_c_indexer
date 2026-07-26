@@ -299,8 +299,17 @@ whatever the vote filter removes. The entities are the ones D5 names.
       `sol_balances` and `token_balances` tables key on the account and the
       write upserts, guarded by `WHERE existing.slot <= excluded.slot` so an
       out-of-order backfilled observation never clobbers a newer value (D5)
-- [ ] Reorg path in one transaction: delete at or above the reorged slot,
-      rewrite, and recompute the affected bars
+- [x] Reorg path in one transaction: delete at or above the reorged slot,
+      rewrite, and recompute the affected bars — `store_reorg` (`src/pg_store.c`)
+      runs, in one transaction (D4): a delete at or above `from_slot` from every
+      table (state and events by `slot`, dimensions by `first_seen_slot`, bars
+      by `close_seq_slot` — a bar holds a reorged swap exactly when its latest
+      swap is at or above the cut), then the caller's replacement applied
+      through the shared write path. The bars are recomputed by the caller's bar
+      registry (`idx_bar_registry_recompute_range`, M6) and arrive in the
+      replacement already folded, which is what makes the delete-then-rewrite
+      exact and keeps the store a pure sink. A reader never sees a half-applied
+      reorg. Verified against PostgreSQL 17
 - [ ] Retention: drop confirmed rows once promoted and past a safety margin
 - [ ] ClickHouse HTTP client: query, insert, error and exception-code handling
 - [ ] `RowBinary` serialization for the insert path (`JSONEachRow` for
