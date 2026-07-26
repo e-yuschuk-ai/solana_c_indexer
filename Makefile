@@ -91,9 +91,9 @@ CFLAGS_VENDOR := -std=c11 -Ivendor -w -MMD -MP \
 LIB_OBJS := $(filter-out $(OBJ_DIR)/main.o,$(OBJS)) $(VENDOR_OBJS)
 
 TEST_SRCS := $(wildcard tests/test_*.c)
-# The pg test needs libpq to link; drop it when libpq is absent.
+# The pg tests need libpq to link; drop them when libpq is absent.
 ifndef HAVE_LIBPQ
-  TEST_SRCS := $(filter-out tests/test_pg.c,$(TEST_SRCS))
+  TEST_SRCS := $(filter-out tests/test_pg.c tests/test_pg_store.c,$(TEST_SRCS))
 endif
 TEST_BINS := $(patsubst tests/%.c,$(BUILD_DIR)/tests/%,$(TEST_SRCS))
 

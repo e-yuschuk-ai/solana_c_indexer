@@ -280,10 +280,25 @@ whatever the vote filter removes. The entities are the ones D5 names.
       nothing when absent, so the project still builds without PostgreSQL.
       `tests/test_pg.c` runs its offline half anywhere and its online half
       against the `docker-compose.yml` server when `IDX_TEST_PG_CONNINFO` is set
-- [ ] Confirmed schema, indexed by slot: balances, transfers, swaps, bars,
-      plus the pool and token dimensions
-- [ ] Balance state written as an upsert keyed on the account, so the tier
-      holds a current value per account rather than an observation log
+- [x] Confirmed schema, indexed by slot: balances, transfers, swaps, bars,
+      plus the pool and token dimensions — `idx_pg_confirmed_store_open`
+      (`src/pg_store.c`) creates the nine tables and drives an
+      `idx_store_write_set` into them through prepared statements over `idx_pg`,
+      as an `idx_confirmed_store` behind the store.h abstraction. Every table
+      carries `slot` (bars carry `close_seq_slot`) and is indexed by it, which
+      is what makes the reorg and retention deletes range operations (D4). Keys
+      and signatures are BYTEA; uint64 amounts that overflow int64 (raw token
+      amounts, balance.h) are NUMERIC(20,0). Events key on the instruction path
+      and re-index idempotently (ON CONFLICT DO NOTHING); dimensions upsert and
+      accumulate; bars fold with the greatest/least/+ merge D4 names, open and
+      close chosen by a packed sequence key that byte-compares like
+      `idx_bar_seq_compare`. Verified against real PostgreSQL 17 under
+      ASan/UBSan
+- [x] Balance state written as an upsert keyed on the account, so the tier
+      holds a current value per account rather than an observation log — the
+      `sol_balances` and `token_balances` tables key on the account and the
+      write upserts, guarded by `WHERE existing.slot <= excluded.slot` so an
+      out-of-order backfilled observation never clobbers a newer value (D5)
 - [ ] Reorg path in one transaction: delete at or above the reorged slot,
       rewrite, and recompute the affected bars
 - [ ] Retention: drop confirmed rows once promoted and past a safety margin
