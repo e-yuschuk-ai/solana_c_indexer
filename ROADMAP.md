@@ -317,7 +317,18 @@ whatever the vote filter removes. The entities are the ones D5 names.
       promoted — is the caller's, applied through its choice of slot (the
       promotion path, a later item, supplies it). The slot index on every table
       is what makes this a range delete rather than a scan (D4)
-- [ ] ClickHouse HTTP client: query, insert, error and exception-code handling
+- [x] ClickHouse HTTP client: query, insert, error and exception-code
+      handling — `idx_ch` (`include/ch.h`, `src/ch.c`) talks to ClickHouse over
+      its HTTP interface, on libcurl (already a dependency, D1), so the
+      finalized tier needs no native client library. `idx_ch_query` runs a
+      statement with the SQL in the body (DDL, SELECT, inline INSERT);
+      `idx_ch_insert` puts the statement in the URL so the body is exactly the
+      data, which is what lets an insert carry a binary RowBinary payload (the
+      next item). Failures map to `idx_status`: a transport failure is
+      IDX_ERR_NETWORK/TIMEOUT, a server exception is IDX_ERR_REMOTE carrying the
+      numeric code from the `X-ClickHouse-Exception-Code` header, so a caller can
+      tell a retryable overload (252 TOO_MANY_PARTS) from a fatal error without
+      parsing the message. Verified against ClickHouse 22.8
 - [ ] `RowBinary` serialization for the insert path (`JSONEachRow` for
       development and debugging)
 - [ ] Finalized schema: denormalized, event tables ordered by

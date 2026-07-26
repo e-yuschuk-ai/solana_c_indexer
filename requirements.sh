@@ -18,8 +18,9 @@
 # libpq-dev is installed here from M7 on: the confirmed-tier storage client is
 # built on it (decision D4). It is optional to the build — the Makefile detects
 # it and compiles the pg module only when it is present — but a storage-enabled
-# deployment needs it, so it belongs in the requirements. A ClickHouse client
-# (the finalized tier) follows in a later M7 item and is not installed yet.
+# deployment needs it, so it belongs in the requirements. The finalized-tier
+# ClickHouse client needs no extra package: it speaks the HTTP interface over
+# libcurl, which is already installed above.
 #
 # The PostgreSQL and ClickHouse *servers* the tests talk to are not installed
 # here: they run in containers (see docker-compose.yml and `./requirements.sh

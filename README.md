@@ -257,6 +257,18 @@ export IDX_TEST_PG_CONNINFO="host=127.0.0.1 port=5433 user=indexer password=inde
 The `pg` module itself is built only when libpq is found (`libpq-dev`); without
 it the module and its test are dropped from the build.
 
+### Storage tests (ClickHouse)
+
+The ClickHouse client test (`tests/test_ch.c`) works the same way, gated on
+`IDX_TEST_CH_URL`. The client speaks the HTTP interface over libcurl, so no
+extra package is needed:
+
+```bash
+docker compose up -d clickhouse
+export IDX_TEST_CH_URL="http://127.0.0.1:8123"
+./build.sh test
+```
+
 ## License
 
 See [LICENSE](LICENSE).
