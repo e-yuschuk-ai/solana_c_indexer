@@ -15,8 +15,15 @@
 # vendor/yyjson and needs no package. See docs/decisions.md for why each
 # dependency was chosen.
 #
-# Not installed here, deliberately: libpq-dev and a ClickHouse client. Storage
-# is milestone M7 and no code needs them yet (ROADMAP.md).
+# libpq-dev is installed here from M7 on: the confirmed-tier storage client is
+# built on it (decision D4). It is optional to the build — the Makefile detects
+# it and compiles the pg module only when it is present — but a storage-enabled
+# deployment needs it, so it belongs in the requirements. A ClickHouse client
+# (the finalized tier) follows in a later M7 item and is not installed yet.
+#
+# The PostgreSQL and ClickHouse *servers* the tests talk to are not installed
+# here: they run in containers (see docker-compose.yml and `./requirements.sh
+# docker`), so the test host needs only the client libraries.
 #
 # Ubuntu's packaged libcurl (unlike Debian trixie's) is not built with
 # WebSocket support, and there is no apt package that provides it. When that
@@ -153,6 +160,12 @@ install_build_requirements() {
         build_curl_with_websockets
     fi
 
+    # libpq-fe.h, pkg-config metadata and the link target for the PostgreSQL
+    # client (the confirmed tier, decision D4). Optional to the build — the
+    # Makefile compiles the pg module only when it finds libpq — but the
+    # storage path needs it (milestone M7).
+    $SUDO apt-get install -y libpq-dev
+
     # The debugger. Not needed to build either, but .vscode/launch.json drives
     # it, so a breakpoint does nothing without it.
     $SUDO apt-get install -y gdb
@@ -212,6 +225,17 @@ check() {
     else
         bad "curl-config (apt-get install libcurl4-openssl-dev)"
         failures=$((failures + 1))
+    fi
+
+    # libpq is optional: the Makefile builds the pg module only when it is
+    # found, so a missing one is a warning, not a failure.
+    if pkg-config --exists libpq 2>/dev/null; then
+        ok "libpq $(pkg-config --modversion libpq)"
+    elif command -v pg_config >/dev/null 2>&1; then
+        ok "libpq $(pg_config --version | grep -o '[0-9][0-9.]*' | head -1)"
+    else
+        warn "libpq not found; the PostgreSQL storage tier will not be built"
+        warn "  (apt-get install libpq-dev)"
     fi
 
     if command -v gdb >/dev/null 2>&1; then

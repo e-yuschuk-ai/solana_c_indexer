@@ -35,11 +35,33 @@ ifeq ($(CURL_LIBS),)
   CURL_LIBS := -lcurl
 endif
 
+# PostgreSQL client (libpq), milestone M7. Optional: the pg module compiles to
+# nothing and its test is skipped when libpq is not found, so the project still
+# builds without it. Detection prefers pkg-config, then pg_config. Override
+# PG_CFLAGS and PG_LIBS (both) to point at a libpq in a non-standard location.
+ifeq ($(origin PG_LIBS),undefined)
+  ifeq ($(shell pkg-config --exists libpq 2>/dev/null && echo y),y)
+    PG_CFLAGS := $(shell pkg-config --cflags libpq)
+    PG_LIBS   := $(shell pkg-config --libs libpq)
+  else ifneq ($(shell command -v pg_config 2>/dev/null),)
+    PG_CFLAGS := -I$(shell pg_config --includedir)
+    PG_LIBS   := -L$(shell pg_config --libdir) -lpq
+  endif
+endif
+HAVE_LIBPQ := $(if $(strip $(PG_LIBS)),1,)
+
 CFLAGS_BASE := -std=c11 -Wall -Wextra -Werror -pedantic \
                -Wshadow -Wconversion -Wstrict-prototypes \
                -D_POSIX_C_SOURCE=200809L -Iinclude -Ivendor \
                $(CURL_CFLAGS) -MMD -MP
 LDLIBS_BASE := -lpthread $(CURL_LIBS)
+
+# When libpq is present, define IDX_HAVE_LIBPQ (which gates src/pg.c) and link
+# it into every binary. The one unused -lpq per test is harmless.
+ifdef HAVE_LIBPQ
+  CFLAGS_BASE += -DIDX_HAVE_LIBPQ $(PG_CFLAGS)
+  LDLIBS_BASE += $(PG_LIBS)
+endif
 
 ifeq ($(BUILD),debug)
   CFLAGS_PROFILE := -O0 -g3 -DIDX_BUILD_DEBUG
@@ -69,6 +91,10 @@ CFLAGS_VENDOR := -std=c11 -Ivendor -w -MMD -MP \
 LIB_OBJS := $(filter-out $(OBJ_DIR)/main.o,$(OBJS)) $(VENDOR_OBJS)
 
 TEST_SRCS := $(wildcard tests/test_*.c)
+# The pg test needs libpq to link; drop it when libpq is absent.
+ifndef HAVE_LIBPQ
+  TEST_SRCS := $(filter-out tests/test_pg.c,$(TEST_SRCS))
+endif
 TEST_BINS := $(patsubst tests/%.c,$(BUILD_DIR)/tests/%,$(TEST_SRCS))
 
 # Diagnostic programs that talk to a live endpoint. Built by `make tools`, not

@@ -11,3 +11,36 @@ services:
     # run.sh reads ./.env itself when the file is present (see README.md),
     # so no env_file entry is needed here.
     command: ["./run.sh"]
+    # The confirmed tier (decision D4). Point the storage tests at it with:
+    #   IDX_TEST_PG_CONNINFO="host=postgres port=5432 user=indexer \
+    #     password=indexer dbname=indexer"
+    environment:
+      IDX_TEST_PG_CONNINFO: "host=postgres port=5432 user=indexer password=indexer dbname=indexer"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # PostgreSQL for the confirmed tier (decision D4). This is the server the
+  # storage tests run against; the test host only needs libpq (libpq-dev). Data
+  # lives in a named volume so a restart keeps it, and `docker compose down -v`
+  # discards it for a clean slate.
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: indexer
+      POSTGRES_PASSWORD: indexer
+      POSTGRES_DB: indexer
+    ports:
+      # Host 5433 avoids clashing with a PostgreSQL already on the default
+      # 5432; inside the compose network the port is still 5432.
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U indexer -d indexer"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:

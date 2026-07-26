@@ -240,6 +240,23 @@ modules establish.
 `./build.sh test` builds one binary per `tests/test_*.c` and runs them all under
 the sanitizers. A non-zero exit from any binary fails the run.
 
+### Storage tests (PostgreSQL)
+
+The PostgreSQL client test (`tests/test_pg.c`) runs its offline half — argument
+checks and connection-failure handling — with no server. Its online half runs
+only when `IDX_TEST_PG_CONNINFO` names a reachable database, and is skipped
+otherwise, so `make test` stays green without one. `docker-compose.yml` brings a
+server up:
+
+```bash
+docker compose up -d postgres
+export IDX_TEST_PG_CONNINFO="host=127.0.0.1 port=5433 user=indexer password=indexer dbname=indexer"
+./build.sh test
+```
+
+The `pg` module itself is built only when libpq is found (`libpq-dev`); without
+it the module and its test are dropped from the build.
+
 ## License
 
 See [LICENSE](LICENSE).

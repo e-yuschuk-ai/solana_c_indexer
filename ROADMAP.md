@@ -267,7 +267,19 @@ whatever the vote filter removes. The entities are the ones D5 names.
       pipeline holds only the handles. An in-memory reference backend of each
       tier ships with it — the executable spec a real backend is contract-tested
       against, and what lets the pipeline run with no database attached
-- [ ] PostgreSQL client over libpq: connection handling, prepared statements
+- [x] PostgreSQL client over libpq: connection handling, prepared statements —
+      `idx_pg` wraps libpq behind `include/pg.h`, the only place `libpq-fe.h` is
+      reached (like libcurl behind the transport modules, D1). It maps libpq's
+      result codes onto `idx_status` (IDX_ERR_NETWORK for a dropped link,
+      IDX_ERR_REMOTE with the SQLSTATE and message for a rejected statement),
+      remembers every prepared statement so `idx_pg_reset` re-prepares them on
+      the fresh session a reconnect opens, and wraps BEGIN/COMMIT/ROLLBACK for
+      the reorg transaction (D4). It knows no entity or table; the confirmed
+      store backend below is what drives SQL through it. The module is optional:
+      the Makefile detects libpq (pkg-config, then pg_config) and compiles it to
+      nothing when absent, so the project still builds without PostgreSQL.
+      `tests/test_pg.c` runs its offline half anywhere and its online half
+      against the `docker-compose.yml` server when `IDX_TEST_PG_CONNINFO` is set
 - [ ] Confirmed schema, indexed by slot: balances, transfers, swaps, bars,
       plus the pool and token dimensions
 - [ ] Balance state written as an upsert keyed on the account, so the tier
