@@ -4,7 +4,10 @@ A Solana blockchain indexer written in C11.
 
 The project is built incrementally; see [ROADMAP.md](ROADMAP.md) for the plan
 and the current state, and [docs/decisions.md](docs/decisions.md) for the
-choices that shape it.
+choices that shape it. What the indexer reads out of the chain and what it
+persists are specified independently of this implementation in
+[docs/specification/PARSING.md](docs/specification/PARSING.md) and
+[docs/specification/STORAGE.md](docs/specification/STORAGE.md).
 
 Complete so far: the project foundation (M1), the core data structures (M2),
 the transport (M3) — a WebSocket client that follows the chain tip through

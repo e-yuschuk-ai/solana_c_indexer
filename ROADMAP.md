@@ -377,6 +377,29 @@ pool — there is no query by signature.
 - [ ] Pagination and result limits
 - [ ] API documentation in `docs/`
 
+## M10 — Specification documents
+
+Reference documents in `docs/specification/`, written so the design can be
+reimplemented in another language without reading the C. They describe the
+current state, including what is not built yet, so each one is revisited when
+the milestone it documents moves.
+
+- [x] `PARSING.md`: everything the indexer reads out of the block stream — the
+      JSON fields consumed, the structural decode and its validation rules, the
+      three built-in instruction formats with every variant's layout and account
+      positions, the vote filter, the balance/transfer extractors, each venue's
+      program ids, event discriminators and account layouts, swap normalization
+      with the amount-source ranking and the route netting, pricing, the pool and
+      token dimensions, bar derivation and reorg recomputation, plus the error
+      taxonomy that separates an unknown program from a broken one
+- [x] `STORAGE.md`: everything persisted and why it is split in two — the reorg
+      argument for the tier split (D4), the storage abstraction and its write
+      vocabulary, the entity catalogue with the write semantics of each shape,
+      the full confirmed schema with the rationale for every type and every
+      upsert rule, the reorg and retention operations, the finalized tier's
+      designed schema and batching contract, sizing, and an implementation
+      status table
+
 ---
 
 ## Backlog (not scheduled)
