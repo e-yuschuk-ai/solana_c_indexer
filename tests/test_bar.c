@@ -167,6 +167,37 @@ static void test_interval_names(void) {
     TEST_EQ_UINT(idx_bar_interval_seconds(IDX_BAR_1M), 60);
 }
 
+/*
+ * The packed sequence key exists so a store can order by a plain byte
+ * comparison, and both tiers persist it. Its one invariant is therefore that
+ * memcmp of two packed keys agrees in sign with idx_bar_seq_compare — checked
+ * over every field, including the inner flag, which is the one that does not
+ * follow from the numeric order.
+ */
+static void test_seq_pack_orders_like_compare(void) {
+    const idx_bar_seq seqs[] = {
+        {100, 0, 0, 0, false}, {100, 0, 0, 0, true},  {100, 0, 0, 1, true},
+        {100, 0, 1, 0, false}, {100, 1, 0, 0, false}, {101, 0, 0, 0, false},
+        {UINT64_MAX, 65535, 65535, 65535, true},
+    };
+    const size_t n = sizeof seqs / sizeof seqs[0];
+
+    for (size_t i = 0; i < n; i++) {
+        for (size_t j = 0; j < n; j++) {
+            uint8_t a[IDX_BAR_SEQ_KEY_LEN], b[IDX_BAR_SEQ_KEY_LEN];
+            idx_bar_seq_pack(&seqs[i], a);
+            idx_bar_seq_pack(&seqs[j], b);
+            int packed = memcmp(a, b, sizeof a);
+            int direct = idx_bar_seq_compare(&seqs[i], &seqs[j]);
+            TEST_CHECK((packed < 0) == (direct < 0) &&
+                           (packed > 0) == (direct > 0) &&
+                           (packed == 0) == (direct == 0),
+                       "seq %zu vs %zu: packed %d, compare %d", i, j, packed,
+                       direct);
+        }
+    }
+}
+
 /* ---------------------------------------------------------- recompute -- */
 
 static size_t recompute(idx_bar_registry *reg, idx_slot from,
@@ -274,6 +305,7 @@ TEST_MAIN({
     TEST_RUN(test_pools_are_separate);
     TEST_RUN(test_guards);
     TEST_RUN(test_interval_names);
+    TEST_RUN(test_seq_pack_orders_like_compare);
     TEST_RUN(test_recompute_drops_and_rebuilds);
     TEST_RUN(test_recompute_with_rewrite);
     TEST_RUN(test_recompute_above_all);

@@ -66,6 +66,22 @@ typedef struct {
 /* <0, 0 or >0 as `a` orders before, with or after `b`. */
 int idx_bar_seq_compare(const idx_bar_seq *a, const idx_bar_seq *b);
 
+/* Bytes in the packed sequence key below. */
+#define IDX_BAR_SEQ_KEY_LEN 15
+
+/*
+ * Packs a sequence big-endian so that a plain bytewise comparison of two keys
+ * reproduces idx_bar_seq_compare: slot, transaction, instruction, the inner
+ * flag (a top-level instruction ahead of the inner ones it expands into), then
+ * the inner index.
+ *
+ * Both storage tiers persist this, and a bar's open and close are chosen by
+ * comparing it, so the layout is on disk in two places and must be one
+ * definition rather than two that agree by inspection.
+ */
+void idx_bar_seq_pack(const idx_bar_seq *seq,
+                      uint8_t out[IDX_BAR_SEQ_KEY_LEN]);
+
 /*
  * One priced swap, as the bar builder consumes it. `price` must have
  * `has_price`; `pool` is the pool it traded against (a row with no pool, or an

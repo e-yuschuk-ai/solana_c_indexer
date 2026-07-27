@@ -488,10 +488,10 @@ the dispatch reports it unsupported rather than pretending.
 
 ## 5. The finalized tier — ClickHouse
 
-**Status: the transport (`src/ch.c`) and the row serialization (`src/ch_rows.c`)
-are implemented; the schema and the writer are not.** The rest of this section is
-the design those items build to, not a description of running code. §7 lists
-exactly what exists.
+**Status: the transport (`src/ch.c`), the row serialization (`src/ch_rows.c`)
+and the schema and write path (`src/ch_store.c`) are implemented; the batching
+policy, the rollup and the promotion path are not.** §7 lists exactly what
+exists.
 
 ### 5.1 Transport
 
@@ -575,26 +575,52 @@ happens once more at shutdown.
 Denormalized on purpose: wide tables, no joins across normalized tables, which
 is the wrong shape here.
 
-| Table | Engine | Order by | Partition | Notes |
-| --- | --- | --- | --- | --- |
-| `blocks` | ReplacingMergeTree(slot) | `slot` | slot range | |
-| `sol_balances` | ReplacingMergeTree(slot) | `account` | — | Latest observation wins without a delete |
-| `token_balances` | ReplacingMergeTree(slot) | `account` | — | Same |
-| `sol_transfers` | ReplacingMergeTree | `(slot, transaction_index, instruction_index, inner_index)` | slot range | |
-| `token_transfers` | ReplacingMergeTree | same | slot range | |
-| `swaps` | ReplacingMergeTree | same | slot range | |
-| `pools` | ReplacingMergeTree | `address` | — | |
-| `tokens` | ReplacingMergeTree | `mint` | — | |
-| `bars_1s` | ReplacingMergeTree | `(pool, bucket)` | time range | The largest table in the design |
-| `bars_1m` | ReplacingMergeTree | `(pool, bucket)` | time range | |
-| `bars_1d` | ReplacingMergeTree | `(pool, bucket)` | time range | Rollup target for abandoned pools |
+| Table | Engine (version) | Order by | Partition |
+| --- | --- | --- | --- |
+| `blocks` | ReplacingMergeTree(`slot`) | `slot` | `intDiv(slot, 10000000)` |
+| `sol_balances` | ReplacingMergeTree(`slot`) | `account` | — |
+| `token_balances` | ReplacingMergeTree(`slot`) | `account` | — |
+| `sol_transfers` | ReplacingMergeTree(`slot`) | `(slot, transaction_index, instruction_index, inner_index)` | `intDiv(slot, 10000000)` |
+| `token_transfers` | ReplacingMergeTree(`slot`) | same | same |
+| `swaps` | ReplacingMergeTree(`slot`) | same | same |
+| `pools` | ReplacingMergeTree(`version`) | `address` | — |
+| `tokens` | ReplacingMergeTree(`version`) | `mint` | — |
+| `bars_1s` | ReplacingMergeTree(`swap_count`) | `(pool, bucket)` | month of `bucket` |
+| `bars_1m` | ReplacingMergeTree(`swap_count`) | `(pool, bucket)` | month of `bucket` |
+| `bars_1d` | ReplacingMergeTree(`swap_count`) | `(pool, bucket)` | month of `bucket` |
+
+The event tables order by the **full instruction path**, not by
+`(slot, transaction_index)`: that prefix is not unique, and D5 makes the whole
+path so. A partition of ~10M slots is about six weeks at the 2.5 slots/s §6
+measures — coarse enough to keep the part count low, fine enough that dropping
+history is a partition drop rather than a delete. `bars_1d` is created with the
+others and written by the rollup in §5.6.
+
+**Version columns**, since they are what §5.5's "re-indexing is safe" rests on:
+
+- `blocks` and the event tables use the **slot**. Their sort key already
+  identifies the row, so a re-index writes an identical one and the version only
+  makes the dedup explicit.
+- Balance state uses the **slot**. The latest observation of an account wins with
+  no delete, which is what lets this tier hold state at all.
+- `pools` and `tokens` use an explicit **`version`** column, set to the highest
+  slot in the write set that carried the record. A dimension accumulates in the
+  registry and arrives here already merged, so the most recently written record
+  is the complete one — and nothing else on a dimension row is monotonic:
+  `first_seen_slot` is fixed, and a token gains a name without gaining anything
+  countable. Deriving it from the write set rather than from a counter keeps it
+  durable across restarts.
+- Bars use **`swap_count`**. A bar is a fold, so a later write of the same bucket
+  has folded at least as many swaps as an earlier one; the count is the fold's
+  own progress, and the most-folded row is the one to keep.
 
 Column types map from §4.1: `FixedString(32)` / `FixedString(64)` for keys and
-signatures, `UInt64` for raw token amounts (no `NUMERIC` needed — ClickHouse has
-the unsigned type PostgreSQL lacks), `Float64` for prices and volumes, `Int64`
-for slots and times, `UInt8`/`Enum8` for the enums in §3.4. Per-column codecs
-where they pay off — `Delta` + `ZSTD` on the monotonic slot and bucket columns,
-`ZSTD` on the wide key columns.
+signatures, `FixedString(15)` for the packed bar sequence key, `UInt64` for raw
+token amounts (no `NUMERIC` needed — ClickHouse has the unsigned type PostgreSQL
+lacks), `Float64` for prices and volumes, `UInt64` for slots, `Int64` for times
+and bar buckets, `UInt16` for the transaction and instruction indices, `UInt8`
+for the enums in §3.4. Per-column codecs where they pay off — `Delta` + `ZSTD` on
+the monotonic slot and bucket columns, `ZSTD` on the wide key columns.
 
 Bars are split into one table per resolution here, unlike §4.2, because the
 retention and rollup policies genuinely differ per resolution.
@@ -602,10 +628,26 @@ retention and rollup policies genuinely differ per resolution.
 ### 5.5 There are no upserts
 
 ClickHouse has none, so "idempotent re-index" is expressed its way:
-`ReplacingMergeTree` keyed on the sort key with a **version column** — the slot
-for state, the slot for events. Deduplication happens at **merge time**, which
-means reads must either tolerate duplicates or use `FINAL`. That is a real
-constraint on the query layer, not a footnote: design the read paths for it.
+`ReplacingMergeTree` keyed on the sort key with a **version column** (§5.4 lists
+which column, per table). Appending the same write set twice therefore converges
+instead of duplicating.
+
+Deduplication happens in two places, and the difference matters to a reader:
+
+- Rows sharing a sort key **within one insert block** collapse at **insert
+  time**, keeping the highest version. Two observations of one account in the
+  same flush land as one row.
+- Duplicates spread across **separate inserts** wait for a **merge**, which
+  happens on ClickHouse's schedule and not the writer's.
+
+So a read either tolerates duplicates or uses `FINAL`. That is a real constraint
+on the query layer (M9), not a footnote: design the read paths for it.
+
+A flush is not atomic across tables — ClickHouse has no multi-table
+transaction — so a failure part-way leaves the tables before it written. That is
+safe rather than merely tolerable, precisely because every table is idempotent
+under re-insert: the caller retries the same flush and the rows that landed
+twice collapse. A failed flush keeps the rows it did not write buffered.
 
 State tables carry no delete at all. The latest observation wins by version.
 
@@ -657,18 +699,17 @@ though what is *persisted* is.
 | Confirmed retention prune | Done |
 | ClickHouse HTTP client | Done — verified against ClickHouse 22.8 and 24.8 |
 | `RowBinary` and `JSONEachRow` serialization | Done — verified against ClickHouse 24.8, both formats compared with `EXCEPT` |
-| Finalized schema | **Pending** |
-| Finalized state as `ReplacingMergeTree` | **Pending** |
-| Batching writer | **Pending** |
+| Finalized schema and write path | Done — verified against ClickHouse 24.8, including the sort keys, partition keys and codecs read back from `system.tables`/`system.columns` |
+| Finalized state as `ReplacingMergeTree` | Done — two observations of one account collapse to the newer |
+| Batching writer | **Pending** — `append` buffers and `flush` writes, but the row-count and time bounds that decide *when* are not built |
 | Bar rollup to `1d` | **Pending** |
 | Promotion path (`read_range` + bulk insert) | **Pending** |
 | Schema migrations, both tiers | **Pending** |
 | Backpressure from the writers to the ingestion queue | **Pending** |
 
-The confirmed tier is also **not yet wired into the live pipeline**: the
-backends exist and are contract-tested, while the running indexer still
-accumulates the dimensions and bars in process. Wiring is part of the promotion
-and backpressure items above.
+Neither tier is **wired into the live pipeline** yet: both backends exist and are
+contract-tested, while the running indexer still accumulates the dimensions and
+bars in process. Wiring is part of the promotion and backpressure items above.
 
 libpq is an **optional** build dependency: when it is absent the PostgreSQL
 modules compile to nothing and the project still builds, with the in-memory

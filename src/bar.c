@@ -47,6 +47,20 @@ int idx_bar_seq_compare(const idx_bar_seq *a, const idx_bar_seq *b) {
     return 0;
 }
 
+void idx_bar_seq_pack(const idx_bar_seq *seq,
+                      uint8_t out[IDX_BAR_SEQ_KEY_LEN]) {
+    for (int i = 0; i < 8; i++) {
+        out[i] = (uint8_t)(seq->slot >> (8 * (7 - i)));
+    }
+    out[8] = (uint8_t)(seq->transaction_index >> 8);
+    out[9] = (uint8_t)seq->transaction_index;
+    out[10] = (uint8_t)(seq->instruction_index >> 8);
+    out[11] = (uint8_t)seq->instruction_index;
+    out[12] = seq->inner ? 1 : 0;
+    out[13] = (uint8_t)(seq->inner_index >> 8);
+    out[14] = (uint8_t)seq->inner_index;
+}
+
 void idx_bar_registry_init(idx_bar_registry *reg) {
     if (reg != NULL) {
         idx_map_init(&reg->by_key);

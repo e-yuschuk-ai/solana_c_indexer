@@ -347,15 +347,41 @@ whatever the vote filter removes. The entities are the ones D5 names.
       differs from the first one's, which RowBinary cannot otherwise express.
       Verified against ClickHouse 24.8: the same rows inserted in both formats
       into two tables, compared with `EXCEPT` in both directions
-- [ ] Finalized schema: denormalized, event tables ordered by
+- [x] Finalized schema: denormalized, event tables ordered by
       `(slot, transaction_index)`, partitioned by slot range, with column
-      codecs where they pay off
-- [ ] Balance state as `ReplacingMergeTree` keyed on the account with the slot
-      as version, so the latest observation wins without a delete
+      codecs where they pay off — `idx_ch_finalized_store_open`
+      (`src/ch_store.c`) creates the eleven tables and drives an
+      `idx_store_write_set` into them through `idx_ch_rows`, as an
+      `idx_finalized_store` behind the store.h abstraction. Event tables order
+      by the full instruction path, not just `(slot, transaction_index)`: D5
+      makes that path unique and the shorter prefix is not a key. Slot-ranged
+      tables take ~10M slots per partition, about six weeks at the 2.5 slots/s
+      D1a measures; bars partition by month of their bucket, which is what the
+      rollup works in; state and dimension tables are small and unpartitioned.
+      Codecs are `Delta` then `ZSTD` on the monotonic slot and bucket columns
+      and `ZSTD` on the wide key columns. Bars are one table per resolution
+      (`bars_1s`, `bars_1m`, `bars_1d`) rather than one keyed by interval,
+      because the retention and rollup policies differ per resolution;
+      `bars_1d` is created here and written by the rollup below. The packed bar
+      sequence key moved to `idx_bar_seq_pack` (bar.h) now that both tiers
+      persist those bytes and a bytewise comparison of them has to keep
+      reproducing `idx_bar_seq_compare`
+- [x] Balance state as `ReplacingMergeTree` keyed on the account with the slot
+      as version, so the latest observation wins without a delete — the
+      `sol_balances` and `token_balances` tables order by `account` with the
+      slot as the version column, which is the finalized tier's answer to the
+      confirmed tier's slot-guarded upsert. Verified against the server: two
+      observations of one account collapse to the newer one
 - [ ] Batching writer: accumulate rows, flush on row count or time bound,
       never one insert per block (`TOO_MANY_PARTS`)
-- [ ] Re-indexing a slot is safe: `ReplacingMergeTree` keyed on the sort key
-      with a version column
+- [x] Re-indexing a slot is safe: `ReplacingMergeTree` keyed on the sort key
+      with a version column — every table in the schema above, so appending the
+      same write set twice converges rather than duplicating. Two facts about
+      how ClickHouse actually does this, both verified rather than assumed:
+      rows sharing a sort key within one insert block collapse at insert time,
+      keeping the highest version, while duplicates spread across separate
+      inserts wait for a merge — so a reader either tolerates them or uses
+      `FINAL`. That is a real constraint on the M9 query layer, not a footnote
 - [ ] Bar rollup: a pool with no swaps for a configured window is abandoned;
       its `1s` and `1m` bars collapse into `1d` and the fine-grained rows are
       dropped. `bars_1s` is the largest table in the design and this is what

@@ -331,7 +331,7 @@ static const char *const g_reorg_deletes[] = {
 #define SIG_BUF BYTEA_BUF(IDX_SIGNATURE_LEN)
 #define NUM_BUF 24    /* a uint64/int64 in decimal, with room to spare */
 #define DBL_BUF 32
-#define SEQ_KEY_BUF BYTEA_BUF(15)
+#define SEQ_KEY_BUF BYTEA_BUF(IDX_BAR_SEQ_KEY_LEN)
 
 static void bytea_hex(const uint8_t *bytes, size_t n, char *out) {
     static const char hex[] = "0123456789abcdef";
@@ -348,21 +348,11 @@ static void pubkey_hex(const idx_pubkey *key, char *out) {
     bytea_hex(key->bytes, IDX_PUBKEY_LEN, out);
 }
 
-/* Packs a bar sequence big-endian into a 15-byte key whose bytewise order
- * matches idx_bar_seq_compare: slot, transaction, instruction, the inner flag
- * (top-level before inner), then inner_index. */
+/* The packed bar sequence key (bar.h), as BYTEA text. The packing itself lives
+ * in bar.c because the finalized tier persists the same bytes. */
 static void seq_key_hex(const idx_bar_seq *seq, char *out) {
-    uint8_t raw[15];
-    for (int i = 0; i < 8; i++) {
-        raw[i] = (uint8_t)(seq->slot >> (8 * (7 - i)));
-    }
-    raw[8] = (uint8_t)(seq->transaction_index >> 8);
-    raw[9] = (uint8_t)seq->transaction_index;
-    raw[10] = (uint8_t)(seq->instruction_index >> 8);
-    raw[11] = (uint8_t)seq->instruction_index;
-    raw[12] = seq->inner ? 1 : 0;
-    raw[13] = (uint8_t)(seq->inner_index >> 8);
-    raw[14] = (uint8_t)seq->inner_index;
+    uint8_t raw[IDX_BAR_SEQ_KEY_LEN];
+    idx_bar_seq_pack(seq, raw);
     bytea_hex(raw, sizeof raw, out);
 }
 
