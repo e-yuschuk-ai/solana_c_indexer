@@ -488,9 +488,10 @@ the dispatch reports it unsupported rather than pretending.
 
 ## 5. The finalized tier — ClickHouse
 
-**Status: the transport is implemented (`src/ch.c`); the schema and the writer
-are not.** This section is the design those items build to, not a description of
-running code. §7 lists exactly what exists.
+**Status: the transport (`src/ch.c`) and the row serialization (`src/ch_rows.c`)
+are implemented; the schema and the writer are not.** The rest of this section is
+the design those items build to, not a description of running code. §7 lists
+exactly what exists.
 
 ### 5.1 Transport
 
@@ -521,7 +522,43 @@ POST /?query=INSERT%20INTO%20swaps%20FORMAT%20RowBinary
 ```
 
 `JSONEachRow` is kept for development and debugging, where readability is worth
-the size.
+the size. Both are **insert** formats and both are produced by the same writer
+through the same calls, each of which carries the column's name: RowBinary
+ignores it, JSONEachRow uses it as the object key. A debugging run therefore
+differs from a production one by a single format selector, not by a second
+serialization path that can drift from the first.
+
+**RowBinary encoding.** Integers are fixed-width little-endian and floats are
+IEEE 754 little-endian. A `String` is a LEB128 varint byte count followed by the
+bytes; a `FixedString(N)` is exactly N bytes with no prefix. A `Nullable(T)` is
+one flag byte — 1 for null, 0 for present — followed by the value **only when it
+is present**; a null writes the flag and nothing else. Writing a placeholder
+value after a null flag would shift every following column, and the server has
+no way to detect it.
+
+**The JSONEachRow escaping rule.** A binary column is a JSON string of arbitrary
+bytes, and only bytes below `0x20` may be escaped as `\u00XX`. ClickHouse reads
+an escape as a **codepoint**: an escaped `0x80` arrives as the two UTF-8 bytes
+`C2 80`, so a `FixedString(32)` holding a real pubkey overflows to 64 bytes and
+the insert fails with `TOO_LARGE_STRING_SIZE`. Bytes at `0x80` and above
+therefore travel raw, exactly as ClickHouse's own JSON writer emits them. The
+consequence is worth stating plainly: a JSONEachRow body holding binary keys is
+**not valid UTF-8**, and a strict JSON reader will reject it. It round-trips
+through ClickHouse byte for byte, which is what the format is for here; it is
+not a document to hand to `jq`. What it makes readable is the numbers, the enums
+and the nulls.
+
+Two smaller consequences of the same "what does the server actually accept"
+question: a `UInt64` past 2^53 is written unquoted and stays exact, because
+ClickHouse parses the text rather than routing it through a double; and a
+non-finite `Float64` must be **quoted** (`"nan"`, `"inf"`), since the JSON parser
+rejects the bare tokens.
+
+A row whose column count differs from the first row's is refused by the writer.
+RowBinary carries no field names, so the server would silently read the next
+row's bytes as this row's tail and report a decoding error somewhere further
+along; catching it at the call site is the difference between a named column and
+an offset in a batch.
 
 ### 5.3 Batching is a correctness concern
 
@@ -618,8 +655,8 @@ though what is *persisted* is.
 | Confirmed state upsert with the slot guard | Done |
 | Confirmed reorg in one transaction | Done |
 | Confirmed retention prune | Done |
-| ClickHouse HTTP client | Done — verified against ClickHouse 22.8 |
-| `RowBinary` serialization | **Pending** |
+| ClickHouse HTTP client | Done — verified against ClickHouse 22.8 and 24.8 |
+| `RowBinary` and `JSONEachRow` serialization | Done — verified against ClickHouse 24.8, both formats compared with `EXCEPT` |
 | Finalized schema | **Pending** |
 | Finalized state as `ReplacingMergeTree` | **Pending** |
 | Batching writer | **Pending** |

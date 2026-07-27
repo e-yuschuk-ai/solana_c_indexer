@@ -11,7 +11,7 @@
  * libcurl POST does not:
  *
  *   - it separates the query from the data, so an insert can carry a binary
- *     body (RowBinary, the next M7 item) with the statement in the URL;
+ *     body (RowBinary, built by idx_ch_rows) with the statement in the URL;
  *   - it maps ClickHouse's failures onto idx_status — a transport failure is
  *     IDX_ERR_NETWORK, and a server exception is IDX_ERR_REMOTE carrying the
  *     numeric exception code ClickHouse reports in the

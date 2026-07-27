@@ -329,8 +329,24 @@ whatever the vote filter removes. The entities are the ones D5 names.
       numeric code from the `X-ClickHouse-Exception-Code` header, so a caller can
       tell a retryable overload (252 TOO_MANY_PARTS) from a fatal error without
       parsing the message. Verified against ClickHouse 22.8
-- [ ] `RowBinary` serialization for the insert path (`JSONEachRow` for
-      development and debugging)
+- [x] `RowBinary` serialization for the insert path (`JSONEachRow` for
+      development and debugging) — `idx_ch_rows` (`include/ch_rows.h`,
+      `src/ch_rows.c`) builds the body `idx_ch_insert` sends. It is the format
+      layer and nothing else: it knows integers, floats, strings and nulls, not
+      slots, pubkeys or tables, so the schema below is what maps an entity onto
+      a sequence of column calls. Both formats are written through one set of
+      calls that each take the column's name — RowBinary ignores it, JSONEachRow
+      uses it as the key — so a debugging run differs from a production one by a
+      single enum rather than by a second code path that can rot. Two rules were
+      settled against a live server rather than from the documentation, because
+      both fail silently or confusingly otherwise: a `Nullable` writes its flag
+      byte and the value *only when present*, and a JSON string may escape only
+      bytes below 0x20 — ClickHouse reads an escape as a codepoint, so an
+      escaped 0x80 arrives as two UTF-8 bytes and a `FixedString(32)` of a real
+      pubkey overflows to 64. The writer also refuses a row whose column count
+      differs from the first one's, which RowBinary cannot otherwise express.
+      Verified against ClickHouse 24.8: the same rows inserted in both formats
+      into two tables, compared with `EXCEPT` in both directions
 - [ ] Finalized schema: denormalized, event tables ordered by
       `(slot, transaction_index)`, partitioned by slot range, with column
       codecs where they pay off
