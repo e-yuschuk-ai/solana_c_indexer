@@ -52,6 +52,14 @@ services:
     image: clickhouse/clickhouse-server:24.8
     # Left with the built-in `default` user and no password, which is what the
     # ch client connects as by default; the tests target the default database.
+    environment:
+      # Without this the image's entrypoint, finding neither CLICKHOUSE_USER
+      # nor CLICKHOUSE_PASSWORD set, writes a users.d drop-in that restricts
+      # `default` to the loopback interface — every connection from the host or
+      # from another container is then refused as AUTHENTICATION_FAILED.
+      # Skipping that setup keeps the built-in passwordless `default` reachable,
+      # which is what the ch client and the tests expect.
+      CLICKHOUSE_SKIP_USER_SETUP: 1
     ports:
       - "8123:8123"
       - "9000:9000"

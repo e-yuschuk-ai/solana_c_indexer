@@ -3,7 +3,10 @@
 # Carries the toolchain build.sh and run.sh expect: GNU Make, a C11
 # compiler, the ASan/UBSan runtimes, and libcurl with WebSocket support
 # (Ubuntu 24.04's libcurl4-openssl-dev has curl_ws_send/curl_ws_recv; older
-# releases may not). The source is bind-mounted at runtime by
+# releases may not). libpq-dev is here for the same reason requirements.sh
+# installs it: the Makefile compiles the confirmed-tier PostgreSQL client only
+# when it finds libpq, so without it the pg module and its tests are silently
+# dropped from the container build. The source is bind-mounted at runtime by
 # docker-compose.yml, so this image holds only the toolchain, not a copy of
 # the code.
 FROM ubuntu:24.04
@@ -12,6 +15,7 @@ RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         build-essential \
         libcurl4-openssl-dev \
+        libpq-dev \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
